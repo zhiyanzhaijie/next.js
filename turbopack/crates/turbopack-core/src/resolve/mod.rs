@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use bincode::{Decode, Encode};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Level};
@@ -357,6 +358,8 @@ impl ModuleResolveResult {
     TraceRawVcs,
     Serialize,
     Deserialize,
+    Encode,
+    Decode,
 )]
 pub enum ExternalTraced {
     Untraced,
@@ -384,6 +387,8 @@ impl Display for ExternalTraced {
     TraceRawVcs,
     TaskInput,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum ExternalType {
     Url,
@@ -1231,7 +1236,9 @@ pub async fn find_context_file_or_package_key(
     Ok(find_context_file(lookup_path.parent(), names, false))
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, Debug, NonLocalValue)]
+#[derive(
+    Clone, PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, Debug, NonLocalValue, Encode, Decode,
+)]
 enum FindPackageItem {
     PackageDirectory { name: RcStr, dir: FileSystemPath },
     PackageFile { name: RcStr, file: FileSystemPath },
@@ -3178,7 +3185,18 @@ async fn error_severity(resolve_options: Vc<ResolveOptions>) -> Result<IssueSeve
 ///
 /// Currently this is used only for ESMs.
 #[derive(
-    Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, TraceRawVcs, TaskInput, NonLocalValue,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    TraceRawVcs,
+    TaskInput,
+    NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum ModulePart {
     /// Represents the side effects of a module. This part is evaluated even if

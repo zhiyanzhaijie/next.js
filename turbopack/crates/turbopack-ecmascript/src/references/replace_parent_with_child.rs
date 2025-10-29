@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use swc_core::{
     common::util::take::Take,
@@ -18,9 +19,18 @@ use crate::{
 
 /// Used to replace expressions like `<truthy> || <something>` with `<truthy>`
 #[derive(
-    PartialEq, Eq, Serialize, Deserialize, TraceRawVcs, ValueDebugFormat, NonLocalValue, Debug, Hash,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    TraceRawVcs,
+    ValueDebugFormat,
+    NonLocalValue,
+    Debug,
+    Hash,
+    Encode,
+    Decode,
 )]
-
 pub struct ReplaceParentWithChild {
     path: AstPath,
 }

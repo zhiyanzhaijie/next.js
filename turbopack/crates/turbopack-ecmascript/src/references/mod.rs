@@ -30,6 +30,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use bincode::{Decode, Encode};
 use constant_condition::{ConstantConditionCodeGen, ConstantConditionValue};
 use constant_value::ConstantValueCodeGen;
 use either::Either;
@@ -72,7 +73,8 @@ use turbo_tasks_fs::FileSystemPath;
 use turbopack_core::{
     compile_time_info::{
         CompileTimeDefineValue, CompileTimeDefines, CompileTimeInfo, DefinableNameSegment,
-        FreeVarReference, FreeVarReferences, FreeVarReferencesIndividual, InputRelativeConstant,
+        FreeVarReference, FreeVarReferenceVcs, FreeVarReferences, FreeVarReferencesIndividual,
+        InputRelativeConstant,
     },
     environment::Rendering,
     error::PrettyPrintError,
@@ -111,40 +113,27 @@ use self::{
     raw::{DirAssetReference, FileSourceReference},
     typescript::{TsConfigReference, TsReferencePathAssetReference, TsReferenceTypeAssetReference},
 };
-use super::{
-    EcmascriptModuleAssetType, ModuleTypeResult,
-    analyzer::{
-        ConstantValue as JsConstantValue, JsValue, ObjectPart, WellKnownFunctionKind,
-        WellKnownObjectKind,
-        builtin::replace_builtin,
-        graph::{Effect, create_graph},
-        linker::link,
-        well_known::replace_well_known,
-    },
-    errors,
-    parse::ParseResult,
-    utils::js_value_to_pattern,
-    webpack::{
-        WebpackChunkAssetReference, WebpackEntryAssetReference, WebpackRuntimeAssetReference,
-        parse::{WebpackRuntime, webpack_runtime},
-    },
-};
 pub use crate::references::esm::export::{FollowExportsResult, follow_reexports};
 use crate::{
-    AnalyzeMode, EcmascriptInputTransforms, EcmascriptModuleAsset, EcmascriptParsable,
-    SpecifiedModuleType, TreeShakingMode, TypeofWindow,
+    AnalyzeMode, EcmascriptInputTransforms, EcmascriptModuleAsset, EcmascriptModuleAssetType,
+    EcmascriptParsable, ModuleTypeResult, SpecifiedModuleType, TreeShakingMode, TypeofWindow,
     analyzer::{
-        ConstantNumber, ConstantString, JsValueUrlKind, RequireContextValue,
-        builtin::early_replace_builtin,
-        graph::{ConditionalKind, EffectArg, EvalContext, VarGraph},
+        ConstantNumber, ConstantString, ConstantValue as JsConstantValue, JsValue, JsValueUrlKind,
+        ObjectPart, RequireContextValue, WellKnownFunctionKind, WellKnownObjectKind,
+        builtin::{early_replace_builtin, replace_builtin},
+        graph::{ConditionalKind, Effect, EffectArg, EvalContext, VarGraph, create_graph},
         imports::{ImportAnnotations, ImportAttributes, ImportedSymbol, Reexport},
+        linker::link,
         parse_require_context,
         top_level_await::has_top_level_await,
+        well_known::replace_well_known,
     },
     chunk::EcmascriptExports,
     code_gen::{CodeGen, CodeGens, IntoCodeGenReference},
+    errors,
     export::Liveness,
     magic_identifier,
+    parse::ParseResult,
     references::{
         async_module::{AsyncModule, OptionAsyncModule},
         cjs::{CjsRequireAssetReference, CjsRequireCacheAccess, CjsRequireResolveAssetReference},
@@ -167,7 +156,11 @@ use crate::{
     },
     source_map::parse_source_map_comment,
     tree_shake::{find_turbopack_part_id_in_asserts, part_of_module, split_module},
-    utils::{AstPathRange, module_value_to_well_known_object},
+    utils::{AstPathRange, js_value_to_pattern, module_value_to_well_known_object},
+    webpack::{
+        WebpackChunkAssetReference, WebpackEntryAssetReference, WebpackRuntimeAssetReference,
+        parse::{WebpackRuntime, webpack_runtime},
+    },
 };
 
 #[turbo_tasks::value(shared)]
@@ -2727,7 +2720,7 @@ async fn handle_member(
         if let Some(references) = references {
             let obj = obj.as_ref().unwrap();
             if let Some(def_name_len) = obj.get_definable_name_len() {
-                for (name, value) in references {
+                for (name, value) in &references.0 {
                     if name.len() != def_name_len {
                         continue;
                     }
@@ -2769,7 +2762,7 @@ async fn handle_typeof(
 ) -> Result<()> {
     if let Some(value) = arg.match_free_var_reference(
         state.var_graph,
-        &*state.free_var_references,
+        &state.free_var_references,
         &DefinableNameSegment::TypeOf,
     ) {
         handle_free_var_reference(ast_path, &*value.await?, span, state, analysis).await?;
@@ -2788,7 +2781,7 @@ async fn handle_free_var(
     if let Some(def_name_len) = var.get_definable_name_len() {
         let first = var.iter_definable_name_rev().next().unwrap();
         if let Some(references) = state.free_var_references.get(&*first) {
-            for (name, value) in references {
+            for (name, value) in &references.0 {
                 if name.len() + 1 != def_name_len {
                     continue;
                 }
@@ -3142,10 +3135,7 @@ async fn value_visitor(
     origin: Vc<Box<dyn ResolveOrigin>>,
     v: JsValue,
     compile_time_info: Vc<CompileTimeInfo>,
-    free_var_references: &FxIndexMap<
-        DefinableNameSegment,
-        FxIndexMap<Vec<DefinableNameSegment>, ResolvedVc<FreeVarReference>>,
-    >,
+    free_var_references: &FxIndexMap<DefinableNameSegment, FreeVarReferenceVcs>,
     var_graph: &VarGraph,
     attributes: &ImportAttributes,
     allow_project_root_tracing: bool,
@@ -3168,10 +3158,7 @@ async fn value_visitor_inner(
     origin: Vc<Box<dyn ResolveOrigin>>,
     v: JsValue,
     compile_time_info: Vc<CompileTimeInfo>,
-    free_var_references: &FxIndexMap<
-        DefinableNameSegment,
-        FxIndexMap<Vec<DefinableNameSegment>, ResolvedVc<FreeVarReference>>,
-    >,
+    free_var_references: &FxIndexMap<DefinableNameSegment, FreeVarReferenceVcs>,
     var_graph: &VarGraph,
     attributes: &ImportAttributes,
     allow_project_root_tracing: bool,
@@ -3890,8 +3877,14 @@ async fn resolve_as_webpack_runtime(
     }
 }
 
-#[derive(Hash, Debug, Clone, Eq, Serialize, Deserialize, PartialEq, TraceRawVcs)]
-pub struct AstPath(#[turbo_tasks(trace_ignore)] Vec<AstParentKind>);
+#[derive(
+    Hash, Debug, Clone, Eq, Serialize, Deserialize, PartialEq, TraceRawVcs, Encode, Decode,
+)]
+pub struct AstPath(
+    #[bincode(with_serde)]
+    #[turbo_tasks(trace_ignore)]
+    Vec<AstParentKind>,
+);
 
 impl TaskInput for AstPath {
     fn is_transient(&self) -> bool {

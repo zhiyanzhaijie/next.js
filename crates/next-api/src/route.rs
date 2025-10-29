@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use turbo_rcstr::RcStr;
 use turbo_tasks::{
@@ -24,6 +25,8 @@ use crate::{operation::OptionEndpoint, paths::ServerPath, project::Project};
     Clone,
     Debug,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub struct AppPageRoute {
     pub original_name: RcStr,
@@ -88,6 +91,8 @@ pub trait Endpoint {
     Clone,
     Debug,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum EndpointGroupKey {
     Instrumentation,
@@ -123,6 +128,8 @@ impl Display for EndpointGroupKey {
     Clone,
     Debug,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub struct EndpointGroup {
     pub primary: Vec<ResolvedVc<Box<dyn Endpoint>>>,
@@ -270,4 +277,4 @@ pub enum EndpointOutputPaths {
 /// The routes as map from pathname to route. (pathname includes the leading
 /// slash)
 #[turbo_tasks::value(transparent)]
-pub struct Routes(FxIndexMap<RcStr, Route>);
+pub struct Routes(#[bincode(with = "turbo_bincode::indexmap")] FxIndexMap<RcStr, Route>);

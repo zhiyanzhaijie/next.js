@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use bincode::{Decode, Encode};
 use indexmap::map::Entry;
 use next_core::{
     app_structure::find_app_dir,
@@ -99,6 +100,8 @@ use crate::{
     TraceRawVcs,
     NonLocalValue,
     OperationValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DraftModeOptions {
@@ -121,6 +124,8 @@ pub struct DraftModeOptions {
     TraceRawVcs,
     NonLocalValue,
     OperationValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct WatchOptions {
@@ -144,6 +149,8 @@ pub struct WatchOptions {
     TraceRawVcs,
     NonLocalValue,
     OperationValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectOptions {
@@ -243,6 +250,8 @@ pub struct PartialProjectOptions {
     TraceRawVcs,
     NonLocalValue,
     OperationValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DefineEnv {
@@ -251,13 +260,33 @@ pub struct DefineEnv {
     pub nodejs: Vec<(RcStr, Option<RcStr>)>,
 }
 
-#[derive(Serialize, Deserialize, TraceRawVcs, PartialEq, Eq, ValueDebugFormat, NonLocalValue)]
+#[derive(
+    Serialize,
+    Deserialize,
+    TraceRawVcs,
+    PartialEq,
+    Eq,
+    ValueDebugFormat,
+    NonLocalValue,
+    Encode,
+    Decode,
+)]
 pub struct Middleware {
     pub endpoint: ResolvedVc<Box<dyn Endpoint>>,
     pub is_proxy: bool,
 }
 
-#[derive(Serialize, Deserialize, TraceRawVcs, PartialEq, Eq, ValueDebugFormat, NonLocalValue)]
+#[derive(
+    Serialize,
+    Deserialize,
+    TraceRawVcs,
+    PartialEq,
+    Eq,
+    ValueDebugFormat,
+    NonLocalValue,
+    Encode,
+    Decode,
+)]
 pub struct Instrumentation {
     pub node_js: ResolvedVc<Box<dyn Endpoint>>,
     pub edge: ResolvedVc<Box<dyn Endpoint>>,

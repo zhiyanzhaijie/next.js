@@ -1,6 +1,7 @@
 use std::{fmt::Display, io::Write};
 
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{NonLocalValue, ResolvedVc, TaskInput, TryJoinIterExt, Vc, trace::TraceRawVcs};
@@ -48,6 +49,8 @@ use crate::{
     TaskInput,
     Hash,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum CachedExternalType {
     CommonJs,
@@ -58,7 +61,18 @@ pub enum CachedExternalType {
 }
 
 #[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TraceRawVcs, TaskInput, Hash, NonLocalValue,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    TraceRawVcs,
+    TaskInput,
+    Hash,
+    NonLocalValue,
+    Encode,
+    Decode,
 )]
 /// Whether to add a traced reference to the external module using the given context and resolve
 /// origin.

@@ -2,6 +2,7 @@ use std::mem::take;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use bincode::{Decode, Encode};
 use either::Either;
 use futures::try_join;
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,6 @@ use turbopack_resolve::{
     resolve_options_context::ResolveOptionsContext,
 };
 
-use super::util::{EmittedAsset, emitted_assets_to_virtual_sources};
 use crate::{
     AssetsForSourceMapping,
     debug::should_debug,
@@ -61,6 +61,7 @@ use crate::{
     execution_context::ExecutionContext,
     pool::{FormattingMode, NodeJsPool},
     source_map::{StackFrame, StructuredError},
+    transforms::util::{EmittedAsset, emitted_assets_to_virtual_sources},
 };
 
 #[serde_as]
@@ -83,11 +84,22 @@ struct WebpackLoadersProcessingResult {
 }
 
 #[derive(
-    Clone, PartialEq, Eq, Debug, TraceRawVcs, Serialize, Deserialize, NonLocalValue, OperationValue,
+    Clone,
+    PartialEq,
+    Eq,
+    Debug,
+    TraceRawVcs,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    OperationValue,
+    Encode,
+    Decode,
 )]
 pub struct WebpackLoaderItem {
     pub loader: RcStr,
     #[serde(default)]
+    #[bincode(with = "turbo_bincode::serde_json")]
     pub options: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -325,7 +337,7 @@ pub(crate) async fn evaluate_webpack_loader(
     custom_evaluate(webpack_loader_context).await
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Encode, Decode)]
 #[serde(rename_all = "camelCase")]
 enum LogType {
     Error,
@@ -344,11 +356,12 @@ enum LogType {
     Status,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Encode, Decode)]
 #[serde(rename_all = "camelCase")]
 pub struct LogInfo {
     time: u64,
     log_type: LogType,
+    #[bincode(with = "turbo_bincode::serde_json")]
     args: Vec<JsonValue>,
     trace: Option<Vec<StackFrame<'static>>>,
 }

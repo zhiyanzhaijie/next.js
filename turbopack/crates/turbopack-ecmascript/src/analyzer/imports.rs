@@ -28,6 +28,7 @@ use crate::{
 pub struct ImportAnnotations {
     // TODO store this in more structured way
     #[turbo_tasks(trace_ignore)]
+    #[bincode(with_serde)]
     map: BTreeMap<Atom, Atom>,
 }
 
