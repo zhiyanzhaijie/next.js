@@ -315,6 +315,36 @@ impl VarMeta {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum ImportUsage {
+    Global,
+    OnlyExports(FxHashSet<Id>),
+}
+impl ImportUsage {
+    fn add_export(&mut self, user: &Id) {
+        match self {
+            ImportUsage::OnlyExports(set) => {
+                set.insert(user.clone());
+            }
+            ImportUsage::Global => {}
+        }
+    }
+    fn make_global(&mut self) {
+        *self = ImportUsage::Global;
+    }
+}
+
+impl From<ImportUsage> for turbopack_core::resolve::ImportUsage {
+    fn from(value: ImportUsage) -> Self {
+        match value {
+            ImportUsage::OnlyExports(exports) => {
+                Self::Exports(exports.into_iter().map(|id| RcStr::from(&*id.0)).collect())
+            }
+            ImportUsage::Global => Self::Global,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct VarGraph {
     pub values: FxHashMap<Id, VarMeta>,
@@ -323,6 +353,11 @@ pub struct VarGraph {
     pub free_var_ids: FxHashMap<Atom, Id>,
 
     pub effects: Vec<Effect>,
+
+    // ident -> immediate usage (top level decl)
+    pub top_level_mappings: FxHashMap<Id, FxHashSet<Id>>,
+    // import -> immediate usage (top level decl)
+    pub import_usages: FxHashMap<usize, ImportUsage>,
 }
 
 impl VarGraph {
@@ -347,14 +382,16 @@ pub fn create_graph(
         values: Default::default(),
         free_var_ids: Default::default(),
         effects: Default::default(),
+        top_level_mappings: Default::default(),
+        import_usages: Default::default(),
     };
 
     m.visit_with_ast_path(
         &mut Analyzer {
             analyze_mode,
             data: &mut graph,
-            state: analyzer_state::AnalyzerState::new(),
             eval_context,
+            state: Default::default(),
             effects: Default::default(),
             hoisted_effects: Default::default(),
             early_return_stack: Default::default(),
@@ -881,9 +918,9 @@ struct Analyzer<'a> {
     state: analyzer_state::AnalyzerState,
 
     effects: Vec<Effect>,
-    // Effects collected from hoisted declarations. See https://developer.mozilla.org/en-US/docs/Glossary/Hoisting
-    // Tracked separately so we can preserve effects from hoisted declarations even when we don't
-    // collect effects from the declaring context.
+    /// Effects collected from hoisted declarations. See https://developer.mozilla.org/en-US/docs/Glossary/Hoisting
+    /// Tracked separately so we can preserve effects from hoisted declarations even when we don't
+    /// collect effects from the declaring context.
     hoisted_effects: Vec<Effect>,
     early_return_stack: Vec<EarlyReturn>,
 
@@ -946,6 +983,7 @@ mod analyzer_state {
 
     /// Contains fields of `Analyzer` that should only be modified using helper methods. These are
     /// intentionally private to the rest of the `Analyzer` implementation.
+    #[derive(Default)]
     pub struct AnalyzerState {
         pat_value: Option<JsValue>,
         /// A unique identifier for the current function, based on the span of the function
@@ -957,15 +995,15 @@ mod analyzer_state {
         /// This is configured to [Some] by function handlers and filled by the
         /// return statement handler.
         cur_fn_return_values: Option<Vec<JsValue>>,
+
+        /// The name of the current top-level declaration being analyzed.
+        cur_top_level_decl_name: Option<Id>,
     }
 
     impl AnalyzerState {
-        pub fn new() -> AnalyzerState {
-            AnalyzerState {
-                pat_value: None,
-                cur_fn_id: None,
-                cur_fn_return_values: None,
-            }
+        /// Returns the identifier of the current top level declaration.
+        pub(super) fn cur_top_level_decl_name(&self) -> &Option<Id> {
+            &self.cur_top_level_decl_name
         }
     }
 
@@ -1015,8 +1053,8 @@ mod analyzer_state {
             out
         }
 
-        /// Runs `func` with the current function identifier and return values initialized for the
-        /// block.
+        /// Runs `visitor` with the current function identifier and return values initialized for
+        /// the block.
         pub(super) fn enter_fn(
             &mut self,
             function: &impl FunctionLike,
@@ -1041,6 +1079,23 @@ mod analyzer_state {
                     _ => JsValue::alternatives(return_values),
                 },
             )
+        }
+
+        /// Runs `visitor` with the current top level declaration identifier
+        pub(super) fn enter_top_level_decl<T>(
+            &mut self,
+            name: &Ident,
+            visitor: impl FnOnce(&mut Self) -> T,
+        ) -> T {
+            let is_top_level_fn = self.state.cur_top_level_decl_name.is_none();
+            if is_top_level_fn {
+                self.state.cur_top_level_decl_name = Some(name.to_id());
+            }
+            let result = visitor(self);
+            if is_top_level_fn {
+                self.state.cur_top_level_decl_name = None;
+            }
+            result
         }
     }
 }
@@ -1771,9 +1826,12 @@ impl VisitAstPath for Analyzer<'_> {
         decl: &'ast FnDecl,
         ast_path: &mut AstNodePath<AstParentNodeRef<'r>>,
     ) {
-        let fn_value = self.enter_fn(&*decl.function, |this| {
-            decl.visit_children_with_ast_path(this, ast_path);
+        let fn_value = self.enter_top_level_decl(&decl.ident, |this| {
+            this.enter_fn(&*decl.function, |this| {
+                decl.visit_children_with_ast_path(this, ast_path);
+            })
         });
+
         // Take all effects produced by the function and move them to hoisted effects since
         // function declarations are hoisted.
         // This accounts for the fact that even with `if (false) { function f() {} }` `f` is
@@ -2209,6 +2267,17 @@ impl VisitAstPath for Analyzer<'_> {
         if let Some((esm_reference_index, export)) =
             self.eval_context.imports.get_binding(&ident.to_id())
         {
+            let usage = self
+                .data
+                .import_usages
+                .entry(esm_reference_index)
+                .or_insert_with(|| ImportUsage::OnlyExports(Default::default()));
+            if let Some(top_level) = self.state.cur_top_level_decl_name() {
+                usage.add_export(top_level);
+            } else {
+                usage.make_global();
+            }
+
             // Optimization: Look for a MemberExpr to see if we only access a few members from the
             // module, add those specific effects instead of depending on the entire module.
             //
@@ -2254,6 +2323,17 @@ impl VisitAstPath for Analyzer<'_> {
                 ast_path: as_parent_path(ast_path),
                 span: ident.span(),
             })
+        }
+
+        if !is_unresolved(ident, self.eval_context.unresolved_mark)
+            && let Some(top_level) = self.state.cur_top_level_decl_name()
+            && !(ident.sym == top_level.0 && ident.ctxt == top_level.1)
+        {
+            self.data
+                .top_level_mappings
+                .entry(ident.to_id())
+                .or_default()
+                .insert(top_level.clone());
         }
     }
 

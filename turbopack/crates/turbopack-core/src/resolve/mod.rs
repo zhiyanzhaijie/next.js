@@ -103,6 +103,27 @@ impl ModuleResolveResultItem {
     }
 }
 
+#[turbo_tasks::value(shared)]
+#[derive(Debug, Clone, Default, Hash)]
+pub enum ImportUsage {
+    /// This import is used by some side effect in the module (and can't be tree shaken).
+    #[default]
+    Global,
+    /// This import is used only by these specific exports, if all exports are unused, the import
+    /// can also be removed.
+    ///
+    /// (This is only ever set on `ModulePart::Export` references. Side effects are handled via
+    /// `ModulePart::Evaluation` references, which always have `ImportUsage::Global`.)
+    Exports(Vec<RcStr>),
+}
+#[turbo_tasks::value_impl]
+impl ImportUsage {
+    #[turbo_tasks::function]
+    pub fn global() -> Vc<Self> {
+        Self::Global.cell()
+    }
+}
+
 #[turbo_tasks::value]
 #[derive(Debug, Clone, Default, Hash)]
 pub enum ExportUsage {

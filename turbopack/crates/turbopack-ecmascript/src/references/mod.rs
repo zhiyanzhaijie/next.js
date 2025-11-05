@@ -136,7 +136,7 @@ use crate::{
     analyzer::{
         ConstantNumber, ConstantString, JsValueUrlKind, RequireContextValue,
         builtin::early_replace_builtin,
-        graph::{ConditionalKind, EffectArg, EvalContext, VarGraph},
+        graph::{ConditionalKind, EffectArg, EvalContext, ImportUsage, VarGraph},
         imports::{ImportAnnotations, ImportAttributes, ImportedSymbol, Reexport},
         parse_require_context,
         top_level_await::has_top_level_await,
@@ -748,6 +748,30 @@ async fn analyze_ecmascript_module_internal(
         })
     };
 
+    let mut import_usage =
+        FxHashMap::with_capacity_and_hasher(var_graph.import_usages.len(), Default::default());
+    for (reference, usage) in &var_graph.import_usages {
+        // TODO make this more efficient, i.e. cache the result?
+        if let ImportUsage::OnlyExports(ids) = usage {
+            // compute transitive closure of `ids` over `top_level_mappings`
+            let mut visited = ids.clone();
+            let mut stack = ids.iter().collect::<Vec<_>>();
+
+            while let Some(id) = stack.pop() {
+                if let Some(callers) = var_graph.top_level_mappings.get(id) {
+                    for caller in callers {
+                        if visited.insert(caller.clone()) {
+                            stack.push(caller);
+                        }
+                    }
+                }
+            }
+
+            // TODO filter out the non-export declarations here
+            import_usage.insert(*reference, ImportUsage::OnlyExports(visited));
+        }
+    }
+
     let span = tracing::trace_span!("esm import references");
     let import_references = async {
         let mut import_references = Vec::with_capacity(eval_context.imports.references().len());
@@ -788,6 +812,11 @@ async fn analyze_ecmascript_module_internal(
                     )
                     .then(ModulePart::exports),
                 },
+                import_usage
+                    .get(&i)
+                    .cloned()
+                    .map(Into::into)
+                    .unwrap_or_default(),
                 import_externals,
             )
             .resolved_cell();
@@ -1459,6 +1488,8 @@ async fn analyze_ecmascript_module_internal(
                                                 original_reference.issue_source,
                                                 original_reference.annotations.clone(),
                                                 Some(ModulePart::export(export.clone())),
+                                                // TODO this rewriting is annoying
+                                                ImportUsage::Global.into(),
                                                 original_reference.import_externals,
                                             )
                                             .resolved_cell()
@@ -2899,6 +2930,7 @@ async fn handle_free_var_reference(
                             ) => export.clone().map(ModulePart::export),
                             None => None,
                         },
+                        ImportUsage::Global.into(),
                         state.import_externals,
                     )
                     .resolved_cell())

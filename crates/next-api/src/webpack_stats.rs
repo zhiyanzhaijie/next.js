@@ -58,7 +58,7 @@ where
     let asset_reasons = {
         let module_graph = module_graph.read_graphs().await?;
         let mut edges = vec![];
-        module_graph.traverse_all_edges_unordered(|(parent_node, r), current| {
+        module_graph.traverse_all_edges_unordered(|(parent_node, r, _), current| {
             edges.push((
                 parent_node,
                 RcStr::from(format!("{}: {}", r.chunking_type, r.export)),

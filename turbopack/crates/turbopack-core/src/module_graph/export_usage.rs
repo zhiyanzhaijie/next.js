@@ -14,7 +14,7 @@ pub async fn compute_export_usage_info(
 ) -> Result<Vc<ExportUsageInfo>> {
     let mut used_exports = FxHashMap::<_, ModuleExportUsageInfo>::default();
     let graph = graph.read_graphs().await?;
-    graph.traverse_all_edges_unordered(|(_, ref_data), target| {
+    graph.traverse_all_edges_unordered(|(_, ref_data, _), target| {
         let e = used_exports.entry(target).or_default();
 
         e.add(&ref_data.export);
@@ -81,6 +81,13 @@ impl ModuleExportUsage {
 }
 
 impl ExportUsageInfo {
+    pub fn used_exports_ref(&self, module: ResolvedVc<Box<dyn Module>>) -> &ModuleExportUsageInfo {
+        if let Some(exports) = self.used_exports.get(&module) {
+            exports
+        } else {
+            &ModuleExportUsageInfo::All
+        }
+    }
     pub async fn used_exports(
         &self,
         module: ResolvedVc<Box<dyn Module>>,

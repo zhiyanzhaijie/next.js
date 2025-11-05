@@ -192,7 +192,7 @@ impl Visit<FindServerEntriesNode> for FindServerEntries {
 
             let referenced_modules = referenced_modules
                 .iter()
-                .flat_map(|(chunking_type, _, modules)| match chunking_type {
+                .flat_map(|(chunking_type, _, _, modules)| match chunking_type {
                     ChunkingType::Traced => None,
                     _ => Some(modules.iter()),
                 })

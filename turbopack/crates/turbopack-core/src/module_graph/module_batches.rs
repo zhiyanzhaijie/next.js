@@ -350,7 +350,7 @@ pub async fn compute_module_batches(
 
         // Walk the module graph and mark all modules that are boundary modules (referenced from a
         // different chunk group bitmap)
-        module_graph.traverse_all_edges_unordered(|(parent, ty), node| {
+        module_graph.traverse_all_edges_unordered(|(parent, ty, _), node| {
             let std::collections::hash_set::Entry::Vacant(entry) =
                 pre_batches.boundary_modules.entry(node)
             else {

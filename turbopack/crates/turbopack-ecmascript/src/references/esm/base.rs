@@ -27,8 +27,8 @@ use turbopack_core::{
     reference::ModuleReference,
     reference_type::{EcmaScriptModulesReferenceSubType, ImportWithType},
     resolve::{
-        ExportUsage, ExternalType, ModulePart, ModuleResolveResult, ModuleResolveResultItem,
-        RequestKey,
+        ExportUsage, ExternalType, ImportUsage, ModulePart, ModuleResolveResult,
+        ModuleResolveResultItem, RequestKey,
         origin::{ResolveOrigin, ResolveOriginExt},
         parse::Request,
     },
@@ -325,6 +325,7 @@ pub struct EsmAssetReference {
     pub annotations: ImportAnnotations,
     pub issue_source: IssueSource,
     pub export_name: Option<ModulePart>,
+    pub import_usage: ImportUsage,
     pub import_externals: bool,
     pub is_pure_import: bool,
 }
@@ -346,6 +347,7 @@ impl EsmAssetReference {
         issue_source: IssueSource,
         annotations: ImportAnnotations,
         export_name: Option<ModulePart>,
+        import_usage: ImportUsage,
         import_externals: bool,
     ) -> Self {
         EsmAssetReference {
@@ -354,6 +356,7 @@ impl EsmAssetReference {
             issue_source,
             annotations,
             export_name,
+            import_usage,
             import_externals,
             is_pure_import: false,
         }
@@ -365,6 +368,7 @@ impl EsmAssetReference {
         issue_source: IssueSource,
         annotations: ImportAnnotations,
         export_name: Option<ModulePart>,
+        import_usage: ImportUsage,
         import_externals: bool,
     ) -> Self {
         EsmAssetReference {
@@ -373,6 +377,7 @@ impl EsmAssetReference {
             issue_source,
             annotations,
             export_name,
+            import_usage,
             import_externals,
             is_pure_import: true,
         }
@@ -513,6 +518,11 @@ impl ChunkableModuleReference for EsmAssetReference {
             Some(ModulePart::Evaluation) => ExportUsage::evaluation(),
             _ => ExportUsage::all(),
         }
+    }
+
+    #[turbo_tasks::function]
+    fn import_usage(&self) -> Vc<ImportUsage> {
+        self.import_usage.clone().cell()
     }
 }
 

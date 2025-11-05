@@ -49,6 +49,7 @@ use turbopack_core::{
         ModuleGraph,
         chunk_group_info::{ChunkGroup, ChunkGroupEntry},
         export_usage::compute_export_usage_info,
+        import_usage::compute_import_usage_info,
     },
     output::{OutputAsset, OutputAssets, OutputAssetsReference, OutputAssetsWithReferenced},
     reference_type::{EntryReferenceSubType, ReferenceType},
@@ -437,6 +438,16 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
     let export_usage = if options.remove_unused_exports {
         Some(
             compute_export_usage_info(module_graph.to_resolved().await?)
+                .resolve_strongly_consistent()
+                .await?,
+        )
+    } else {
+        None
+    };
+
+    let import_usage = if options.remove_unused_imports {
+        Some(
+            compute_import_usage_info(module_graph.to_resolved().await?)
                 .resolve_strongly_consistent()
                 .await?,
         )
