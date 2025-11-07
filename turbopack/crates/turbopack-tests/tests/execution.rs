@@ -39,7 +39,10 @@ use turbopack_core::{
     file_source::FileSource,
     ident::Layer,
     issue::CollectibleIssuesExt,
-    module_graph::{ModuleGraph, export_usage::compute_export_usage_info},
+    module_graph::{
+        ModuleGraph, export_usage::compute_export_usage_info,
+        import_usage::compute_import_usage_info,
+    },
     reference_type::{InnerAssets, ReferenceType},
     resolve::{
         ExternalTraced, ExternalType,
@@ -478,9 +481,15 @@ async fn run_test_operation(prepared_test: ResolvedVc<PreparedTest>) -> Result<V
 
     let mut module_graph = ModuleGraph::from_modules(entries.graph_entries(), false);
 
-    if options.remove_unused_imports {
-        module_graph = module_graph.without_unused_references();
-    }
+    let unused_references = if options.remove_unused_imports {
+        let unused_references = compute_import_usage_info(module_graph.to_resolved().await?)
+            .resolve_strongly_consistent()
+            .await?;
+        module_graph = module_graph.without_unused_references(*unused_references);
+        Some(unused_references)
+    } else {
+        None
+    };
 
     let mut builder = NodeJsChunkingContext::builder(
         project_root.clone(),

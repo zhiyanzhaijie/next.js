@@ -25,8 +25,10 @@ use turbopack_core::{
         ModuleGraph,
         chunk_group_info::ChunkGroup,
         export_usage::{ExportUsageInfo, ModuleExportUsage},
+        import_usage::UnusedReferences,
     },
     output::{OutputAsset, OutputAssets},
+    reference::ModuleReference,
 };
 use turbopack_ecmascript::{
     async_chunk::module::AsyncLoaderModule,
@@ -173,6 +175,14 @@ impl BrowserChunkingContextBuilder {
         self
     }
 
+    pub fn unused_references(
+        mut self,
+        unused_references: Option<ResolvedVc<UnusedReferences>>,
+    ) -> Self {
+        self.chunking_context.unused_references = unused_references;
+        self
+    }
+
     pub fn debug_ids(mut self, debug_ids: bool) -> Self {
         self.chunking_context.debug_ids = debug_ids;
         self
@@ -292,6 +302,8 @@ pub struct BrowserChunkingContext {
     module_id_strategy: ResolvedVc<Box<dyn ModuleIdStrategy>>,
     /// The module export usage info, if available.
     export_usage: Option<ResolvedVc<ExportUsageInfo>>,
+    /// Which references are unused and should be skipped (e.g. during codegen).
+    unused_references: Option<ResolvedVc<UnusedReferences>>,
     /// The chunking configs
     chunking_configs: Vec<(ResolvedVc<Box<dyn ChunkType>>, ChunkingConfig)>,
     /// Whether to use absolute URLs for static assets (e.g. in CSS: `url("/absolute/path")`)
@@ -340,6 +352,7 @@ impl BrowserChunkingContext {
                 manifest_chunks: false,
                 module_id_strategy: ResolvedVc::upcast(DevModuleIdStrategy::new_resolved()),
                 export_usage: None,
+                unused_references: None,
                 chunking_configs: Default::default(),
                 should_use_absolute_url_references: false,
             },
@@ -869,6 +882,20 @@ impl ChunkingContext for BrowserChunkingContext {
             // In development mode, we don't have export usage info, so we assume all exports are
             // used.
             Ok(ModuleExportUsage::all())
+        }
+    }
+
+    #[turbo_tasks::function]
+    async fn is_reference_unused(
+        self: Vc<Self>,
+        reference: ResolvedVc<Box<dyn ModuleReference>>,
+    ) -> Result<Vc<bool>> {
+        if let Some(unused_references) = self.await?.unused_references {
+            Ok(Vc::cell(
+                unused_references.await?.contains_reference(&reference),
+            ))
+        } else {
+            Ok(Vc::cell(false))
         }
     }
 

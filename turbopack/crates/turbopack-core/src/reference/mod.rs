@@ -288,7 +288,15 @@ pub async fn primary_referenced_modules(module: Vc<Box<dyn Module>>) -> Result<V
 }
 
 #[turbo_tasks::value(transparent)]
-pub struct ModulesWithRefData(Vec<(ChunkingType, ExportUsage, ImportUsage, ReadRef<Modules>)>);
+pub struct ModulesWithRefData(
+    Vec<(
+        ResolvedVc<Box<dyn ModuleReference>>,
+        ChunkingType,
+        ExportUsage,
+        ImportUsage,
+        ReadRef<Modules>,
+    )>,
+);
 
 /// Aggregates all primary [Module]s referenced by an [Module] via [ChunkableModuleReference]s.
 /// This does not include transitively referenced [Module]s, only includes
@@ -322,7 +330,13 @@ pub async fn primary_chunkable_referenced_modules(
                 let export = reference.export_usage().owned().await?;
                 let import = reference.import_usage().owned().await?;
 
-                return Ok(Some((chunking_type.clone(), export, import, resolved)));
+                return Ok(Some((
+                    ResolvedVc::upcast(reference),
+                    chunking_type.clone(),
+                    export,
+                    import,
+                    resolved,
+                )));
             }
             Ok(None)
         })

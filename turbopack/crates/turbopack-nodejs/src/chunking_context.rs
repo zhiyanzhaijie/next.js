@@ -20,8 +20,10 @@ use turbopack_core::{
         ModuleGraph,
         chunk_group_info::ChunkGroup,
         export_usage::{ExportUsageInfo, ModuleExportUsage},
+        import_usage::UnusedReferences,
     },
     output::{OutputAsset, OutputAssets},
+    reference::ModuleReference,
 };
 use turbopack_ecmascript::{
     async_chunk::module::AsyncLoaderModule,
@@ -122,6 +124,14 @@ impl NodeJsChunkingContextBuilder {
         self
     }
 
+    pub fn unused_references(
+        mut self,
+        unused_references: Option<ResolvedVc<UnusedReferences>>,
+    ) -> Self {
+        self.chunking_context.unused_references = unused_references;
+        self
+    }
+
     pub fn chunking_config<T>(mut self, ty: ResolvedVc<T>, chunking_config: ChunkingConfig) -> Self
     where
         T: Upcast<Box<dyn ChunkType>>,
@@ -189,6 +199,8 @@ pub struct NodeJsChunkingContext {
     module_id_strategy: ResolvedVc<Box<dyn ModuleIdStrategy>>,
     /// The module export usage info, if available.
     export_usage: Option<ResolvedVc<ExportUsageInfo>>,
+    /// Which references are unused and should be skipped (e.g. during codegen).
+    unused_references: Option<ResolvedVc<UnusedReferences>>,
     /// The strategy to use for generating source map source uris
     source_map_source_type: SourceMapSourceType,
     /// The chunking configs
@@ -233,6 +245,7 @@ impl NodeJsChunkingContext {
                 source_map_source_type: SourceMapSourceType::TurbopackUri,
                 module_id_strategy: ResolvedVc::upcast(DevModuleIdStrategy::new_resolved()),
                 export_usage: None,
+                unused_references: None,
                 chunking_configs: Default::default(),
                 debug_ids: false,
             },
@@ -616,6 +629,20 @@ impl ChunkingContext for NodeJsChunkingContext {
             // In development mode, we don't have export usage info, so we assume all exports are
             // used.
             Ok(ModuleExportUsage::all())
+        }
+    }
+
+    #[turbo_tasks::function]
+    async fn is_reference_unused(
+        self: Vc<Self>,
+        reference: ResolvedVc<Box<dyn ModuleReference>>,
+    ) -> Result<Vc<bool>> {
+        if let Some(unused_references) = self.await?.unused_references {
+            Ok(Vc::cell(
+                unused_references.await?.contains_reference(&reference),
+            ))
+        } else {
+            Ok(Vc::cell(false))
         }
     }
 

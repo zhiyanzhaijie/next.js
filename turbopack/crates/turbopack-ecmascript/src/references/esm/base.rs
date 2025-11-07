@@ -534,6 +534,13 @@ impl EsmAssetReference {
     ) -> Result<CodeGeneration> {
         let this = &*self.await?;
 
+        if *chunking_context
+            .is_reference_unused(Vc::upcast(self))
+            .await?
+        {
+            return Ok(CodeGeneration::empty());
+        }
+
         // only chunked references can be imported
         if this.annotations.chunking_type() != Some("none") {
             let import_externals = this.import_externals;
