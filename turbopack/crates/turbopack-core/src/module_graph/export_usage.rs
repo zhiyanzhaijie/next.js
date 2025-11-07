@@ -45,6 +45,16 @@ pub async fn compute_export_usage_info(
         },
     )?;
 
+    // use turbo_tasks::TryJoinIterExt;
+    // println!(
+    //     "export_usage_info {:#?}",
+    //     used_exports
+    //         .iter()
+    //         .map(async |(m, exports)| Ok((m.ident_string().await?, exports)))
+    //         .try_join()
+    //         .await?
+    // );
+
     Ok(ExportUsageInfo {
         used_exports,
         circuit_breakers,
@@ -57,7 +67,7 @@ pub struct OptionExportUsageInfo(Option<ResolvedVc<ExportUsageInfo>>);
 
 #[turbo_tasks::value]
 pub struct ExportUsageInfo {
-    used_exports: FxHashMap<ResolvedVc<Box<dyn Module>>, ModuleExportUsageInfo>,
+    pub used_exports: FxHashMap<ResolvedVc<Box<dyn Module>>, ModuleExportUsageInfo>,
     circuit_breakers: FxHashSet<ResolvedVc<Box<dyn Module>>>,
 }
 
@@ -109,7 +119,7 @@ impl ExportUsageInfo {
 }
 
 #[turbo_tasks::value]
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub enum ModuleExportUsageInfo {
     /// Only the side effects are needed, no exports is used.
     #[default]
