@@ -5,16 +5,24 @@ use turbo_tasks::{ResolvedVc, TryJoinIterExt, Vc};
 use crate::{
     module::Module,
     module_graph::{GraphEdgeIndex, ModuleGraph, export_usage::compute_export_usage_info},
+    reference::ModuleReference,
     resolve::ImportUsage,
 };
 
 #[turbo_tasks::value]
 #[derive(Clone, Default, Debug)]
-pub struct UnusedReferences(#[turbo_tasks(trace_ignore)] FxHashSet<GraphEdgeIndex>);
+pub struct UnusedReferences {
+    references: FxHashSet<ResolvedVc<Box<dyn ModuleReference>>>,
+    #[turbo_tasks(trace_ignore)]
+    edges: FxHashSet<GraphEdgeIndex>,
+}
 
 impl UnusedReferences {
-    pub fn contains(&self, edge: &GraphEdgeIndex) -> bool {
-        self.0.contains(edge)
+    pub fn contains_edge(&self, edge: &GraphEdgeIndex) -> bool {
+        self.edges.contains(edge)
+    }
+    pub fn contains_reference(&self, reference: &ResolvedVc<Box<dyn ModuleReference>>) -> bool {
+        self.references.contains(reference)
     }
 }
 
@@ -29,8 +37,9 @@ pub async fn compute_import_usage_info(
         .read_strongly_consistent()
         .await?;
 
-    let mut unused_references_name = FxHashSet::<_>::default();
-    let mut unused_references = FxHashSet::<_>::default();
+    let mut unused_references_name = FxHashSet::default();
+    let mut edges = FxHashSet::default();
+    let mut references = FxHashSet::default();
     let graph = graph.read_graphs().await?;
     graph.traverse_all_edges_unordered(|(source, ref_data, edge), target| {
         match &ref_data.import {
@@ -46,7 +55,9 @@ pub async fn compute_import_usage_info(
                     .all(|e| !source_used_exports.is_export_used(e))
                 {
                     unused_references_name.insert((source, ref_data.export.clone(), target));
-                    unused_references.insert(edge);
+
+                    edges.insert(edge);
+                    references.insert(ref_data.reference);
                 }
             }
         }
@@ -62,7 +73,8 @@ pub async fn compute_import_usage_info(
             .try_join()
             .await?
     );
-    println!("unused_references: {:#?}", unused_references);
+    println!("edges: {:#?}", edges);
+    println!("references: {:#?}", references);
 
-    Ok(UnusedReferences(unused_references).cell())
+    Ok(UnusedReferences { edges, references }.cell())
 }
