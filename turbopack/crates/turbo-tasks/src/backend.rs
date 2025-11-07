@@ -10,9 +10,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use auto_hash_map::AutoMap;
+use bincode::{
+    Decode, Encode,
+    error::{DecodeError, EncodeError},
+};
 use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
 use tracing::Span;
+use turbo_bincode::{TurboBincodeDecoder, TurboBincodeEncoder};
 use turbo_rcstr::RcStr;
 
 use crate::{
@@ -99,90 +104,12 @@ impl Display for CachedTaskType {
 }
 
 mod ser {
-    use std::any::Any;
-
     use serde::{
         Deserialize, Deserializer, Serialize, Serializer,
-        de::{self},
         ser::{SerializeSeq, SerializeTuple},
     };
 
     use super::*;
-
-    impl Serialize for TypedCellContent {
-        fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let value_type = registry::get_value_type(self.0);
-            let serializable = if let Some(value) = &self.1.0 {
-                value_type.any_as_serializable(&value.0)
-            } else {
-                None
-            };
-            let mut state = serializer.serialize_tuple(3)?;
-            state.serialize_element(&self.0)?;
-            if let Some(serializable) = serializable {
-                state.serialize_element(&true)?;
-                state.serialize_element(serializable)?;
-            } else {
-                state.serialize_element(&false)?;
-                state.serialize_element(&())?;
-            }
-            state.end()
-        }
-    }
-
-    impl<'de> Deserialize<'de> for TypedCellContent {
-        fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct Visitor;
-
-            impl<'de> serde::de::Visitor<'de> for Visitor {
-                type Value = TypedCellContent;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    write!(formatter, "a valid TypedCellContent")
-                }
-
-                fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-                where
-                    A: de::SeqAccess<'de>,
-                {
-                    let value_type: ValueTypeId = seq
-                        .next_element()?
-                        .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                    let has_value: bool = seq
-                        .next_element()?
-                        .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                    if has_value {
-                        let seed = registry::get_value_type(value_type)
-                            .get_any_deserialize_seed()
-                            .ok_or_else(|| {
-                                de::Error::custom("Value type doesn't support deserialization")
-                            })?;
-                        let value = seq
-                            .next_element_seed(seed)?
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                        let arc = triomphe::Arc::<dyn Any + Send + Sync>::from(value);
-                        Ok(TypedCellContent(
-                            value_type,
-                            CellContent(Some(SharedReference(arc))),
-                        ))
-                    } else {
-                        let () = seq
-                            .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                        Ok(TypedCellContent(value_type, CellContent(None)))
-                    }
-                }
-            }
-
-            deserializer.deserialize_tuple(2, Visitor)
-        }
-    }
 
     enum FunctionAndArg<'a> {
         Owned {
@@ -348,6 +275,37 @@ impl TypedCellContent {
 
     pub fn into_untyped(self) -> CellContent {
         self.1
+    }
+
+    pub fn encode(&self, enc: &mut TurboBincodeEncoder) -> Result<(), EncodeError> {
+        let Self(type_id, content) = self;
+        let value_type = registry::get_value_type(*type_id);
+        type_id.encode(enc)?;
+        if let Some(bincode) = value_type.bincode {
+            if let Some(reference) = &content.0 {
+                true.encode(enc)?;
+                bincode.0(&*reference.0, enc)?;
+                Ok(())
+            } else {
+                false.encode(enc)?;
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn decode(dec: &mut TurboBincodeDecoder) -> Result<Self, DecodeError> {
+        let type_id = ValueTypeId::decode(dec)?;
+        let value_type = registry::get_value_type(type_id);
+        if let Some(bincode) = value_type.bincode {
+            let is_some = bool::decode(dec)?;
+            if is_some {
+                let reference = bincode.1(dec)?;
+                return Ok(TypedCellContent(type_id, CellContent(Some(reference))));
+            }
+        }
+        Ok(TypedCellContent(type_id, CellContent(None)))
     }
 }
 

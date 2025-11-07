@@ -1,9 +1,84 @@
+use std::ptr::copy_nonoverlapping;
+
+use ::smallvec::SmallVec;
 use bincode::{
     BorrowDecode, Decode, Encode,
-    de::{BorrowDecoder, Decoder},
-    enc::Encoder,
+    de::{BorrowDecoder, Decoder, DecoderImpl, read::Reader},
+    enc::{Encoder, EncoderImpl, write::Writer},
     error::{DecodeError, EncodeError},
 };
+
+pub const TURBO_BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+pub type TurboBincodeBuffer = SmallVec<[u8; 16]>;
+pub type TurboBincodeEncoder = EncoderImpl<TurboBincodeWriter, bincode::config::Configuration>;
+pub type TurboBincodeDecoder<'a> =
+    DecoderImpl<TurboBincodeReader<'a>, bincode::config::Configuration, ()>;
+
+pub fn new_turbo_bincode_encoder() -> TurboBincodeEncoder {
+    EncoderImpl::new(TurboBincodeWriter::new(), TURBO_BINCODE_CONFIG)
+}
+
+pub fn new_turbo_bincode_decoder<'a>(buffer: &'a [u8]) -> TurboBincodeDecoder<'a> {
+    DecoderImpl::new(TurboBincodeReader::new(buffer), TURBO_BINCODE_CONFIG, ())
+}
+
+pub struct TurboBincodeWriter {
+    pub buffer: TurboBincodeBuffer,
+}
+
+impl TurboBincodeWriter {
+    pub fn new() -> Self {
+        Self {
+            buffer: SmallVec::new(),
+        }
+    }
+}
+
+impl Writer for TurboBincodeWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
+        self.buffer.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+pub struct TurboBincodeReader<'a> {
+    pub buffer: &'a [u8],
+}
+
+impl<'a> TurboBincodeReader<'a> {
+    pub fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer }
+    }
+}
+
+impl Reader for TurboBincodeReader<'_> {
+    fn read(&mut self, target_buffer: &mut [u8]) -> Result<(), DecodeError> {
+        let len = target_buffer.len();
+        let (head, rest) = self
+            .buffer
+            .split_at_checked(len)
+            .ok_or(DecodeError::UnexpectedEnd {
+                additional: target_buffer.len() - self.buffer.len(),
+            })?;
+        // SAFETY:
+        // - We already checked the bounds.
+        // - These memory ranges can't overlap because it would violate rust aliasing rules.
+        // - `u8` is `Copy`.
+        unsafe {
+            copy_nonoverlapping(head.as_ptr(), target_buffer.as_mut_ptr(), len);
+        }
+        self.buffer = rest;
+        Ok(())
+    }
+
+    fn peek_read(&mut self, n: usize) -> Option<&[u8]> {
+        Some(&self.buffer[..n])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.buffer = &self.buffer[n..];
+    }
+}
 
 pub mod indexmap {
     use std::hash::{BuildHasher, Hash};
@@ -378,6 +453,73 @@ pub mod either {
                 .0;
 
             assert_eq!(either1.0, either2.0);
+        }
+    }
+}
+
+pub mod smallvec {
+    use ::smallvec::Array;
+
+    use super::*;
+
+    pub fn encode<E: Encoder, A: Array<Item = impl Encode>>(
+        vec: &SmallVec<A>,
+        encoder: &mut E,
+    ) -> Result<(), EncodeError> {
+        usize::encode(&vec.len(), encoder)?;
+        for item in vec {
+            Encode::encode(item, encoder)?;
+        }
+        Ok(())
+    }
+
+    pub fn decode<Context, D: Decoder<Context = Context>, A: Array<Item = impl Decode<Context>>>(
+        decoder: &mut D,
+    ) -> Result<SmallVec<A>, DecodeError> {
+        let len = usize::decode(decoder)?;
+        let mut vec = SmallVec::with_capacity(len);
+        for _ in 0..len {
+            vec.push(Decode::decode(decoder)?);
+        }
+        Ok(vec)
+    }
+
+    pub fn borrow_decode<
+        'de,
+        Context,
+        D: BorrowDecoder<'de, Context = Context>,
+        A: Array<Item = impl BorrowDecode<'de, Context>>,
+    >(
+        decoder: &mut D,
+    ) -> Result<SmallVec<A>, DecodeError> {
+        let len = usize::decode(decoder)?;
+        let mut vec = SmallVec::with_capacity(len);
+        for _ in 0..len {
+            vec.push(BorrowDecode::borrow_decode(decoder)?);
+        }
+        Ok(vec)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use bincode::{decode_from_slice, encode_to_vec};
+
+        use super::*;
+
+        #[test]
+        fn test_roundtrip() {
+            let cfg = bincode::config::standard();
+
+            #[derive(Encode, Decode)]
+            struct Wrapper(#[bincode(with = "crate::smallvec")] SmallVec<[u32; 4]>);
+
+            let vec1 = Wrapper(SmallVec::from_slice(&[1u32, 2, 3, 4, 5]));
+
+            let vec2: Wrapper = decode_from_slice(&encode_to_vec(&vec1, cfg).unwrap(), cfg)
+                .unwrap()
+                .0;
+
+            assert_eq!(vec1.0, vec2.0);
         }
     }
 }
