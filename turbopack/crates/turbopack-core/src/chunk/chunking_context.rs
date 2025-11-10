@@ -14,7 +14,7 @@ use crate::{
     ident::AssetIdent,
     module::Module,
     module_graph::{
-        ModuleGraph, chunk_group_info::ChunkGroup, export_usage::ModuleExportUsage,
+        ModuleGraph, binding_usage_info::ModuleExportUsage, chunk_group_info::ChunkGroup,
         module_batches::BatchingConfig,
     },
     output::{

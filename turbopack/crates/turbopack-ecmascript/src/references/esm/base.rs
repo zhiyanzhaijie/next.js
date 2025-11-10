@@ -23,7 +23,7 @@ use turbopack_core::{
         OptionStyledString, StyledString,
     },
     module::Module,
-    module_graph::export_usage::ModuleExportUsageInfo,
+    module_graph::binding_usage_info::ModuleExportUsageInfo,
     reference::ModuleReference,
     reference_type::{EcmaScriptModulesReferenceSubType, ImportWithType},
     resolve::{

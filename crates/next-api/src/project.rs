@@ -59,8 +59,8 @@ use turbopack_core::{
     module::Module,
     module_graph::{
         GraphEntries, ModuleGraph, SingleModuleGraph, VisitedModules,
+        binding_usage_info::{OptionBindingUsageInfo, compute_binding_usage_info},
         chunk_group_info::ChunkGroupEntry,
-        export_usage::{OptionExportUsageInfo, compute_export_usage_info},
     },
     output::{
         ExpandOutputAssetsInput, ExpandedOutputAssets, OutputAsset, OutputAssets,
@@ -1889,7 +1889,7 @@ impl Project {
 
     /// Compute the used exports for each module.
     #[turbo_tasks::function]
-    pub async fn export_usage(self: Vc<Self>) -> Result<Vc<OptionExportUsageInfo>> {
+    pub async fn export_usage(self: Vc<Self>) -> Result<Vc<OptionBindingUsageInfo>> {
         if *self
             .next_config()
             .turbopack_remove_unused_exports(self.next_mode())
@@ -1897,7 +1897,27 @@ impl Project {
         {
             let module_graphs = self.whole_app_module_graphs().await?;
             Ok(Vc::cell(Some(
-                compute_export_usage_info(module_graphs.full)
+                compute_binding_usage_info(module_graphs.full)
+                    // As a performance optimization, we resolve strongly consistently
+                    .resolve_strongly_consistent()
+                    .await?,
+            )))
+        } else {
+            Ok(Vc::cell(None))
+        }
+    }
+
+    /// Compute the used exports for each module.
+    #[turbo_tasks::function]
+    pub async fn unused_references(self: Vc<Self>) -> Result<Vc<OptionBindingUsageInfo>> {
+        if *self
+            .next_config()
+            .turbopack_remove_unused_imports(self.next_mode())
+            .await?
+        {
+            let module_graphs = self.whole_app_module_graphs().await?;
+            Ok(Vc::cell(Some(
+                compute_binding_usage_info(module_graphs.full)
                     // As a performance optimization, we resolve strongly consistently
                     .resolve_strongly_consistent()
                     .await?,
