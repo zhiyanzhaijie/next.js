@@ -329,7 +329,7 @@ pub async fn compute_merged_modules(module_graph: Vc<ModuleGraph>) -> Result<Vc<
                             chunk_group.entries(),
                             &mut (),
                             |parent_info, node, _| {
-                                if parent_info.is_none_or(|(_, r)| r.chunking_type.is_parallel())
+                                if parent_info.is_none_or(|(_, r, _)| r.chunking_type.is_parallel())
                                     && visited.insert(node)
                                 {
                                     Ok(GraphTraversalAction::Continue)
@@ -380,7 +380,7 @@ pub async fn compute_merged_modules(module_graph: Vc<ModuleGraph>) -> Result<Vc<
                                     }
                                 }
 
-                                if let Some((parent, _)) = parent_info {
+                                if let Some((parent, _, _)) = parent_info {
                                     let same_bitmap = module_merged_groups.get(&parent).unwrap()
                                         == module_merged_groups.get(&module).unwrap();
 
@@ -468,7 +468,7 @@ pub async fn compute_merged_modules(module_graph: Vc<ModuleGraph>) -> Result<Vc<
             |parent_info, node, _| {
                 let module = node;
 
-                if let Some((parent, _)) = parent_info {
+                if let Some((parent, _, _)) = parent_info {
                     let same_bitmap = module_merged_groups.get(&parent).unwrap()
                         == module_merged_groups.get(&module).unwrap();
 
@@ -480,7 +480,7 @@ pub async fn compute_merged_modules(module_graph: Vc<ModuleGraph>) -> Result<Vc<
                     }
                 }
 
-                if parent_info.is_none_or(|(parent, _)| {
+                if parent_info.is_none_or(|(parent, _, _)| {
                     module_merged_groups.get(&parent).unwrap()
                         != module_merged_groups.get(&module).unwrap()
                 }) {
@@ -490,7 +490,7 @@ pub async fn compute_merged_modules(module_graph: Vc<ModuleGraph>) -> Result<Vc<
                     // necessarily needed for browser),
                     exposed_modules_imported.insert(module);
                 }
-                if parent_info.is_some_and(|(_, r)| matches!(r.export, ExportUsage::All)) {
+                if parent_info.is_some_and(|(_, r, _)| matches!(r.export, ExportUsage::All)) {
                     // This module needs to be exposed:
                     // - namespace import from another group
                     exposed_modules_namespace.insert(module);

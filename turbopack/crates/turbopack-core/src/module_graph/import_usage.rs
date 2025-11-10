@@ -41,23 +41,25 @@ pub async fn compute_import_usage_info(
     let mut edges = FxHashSet::default();
     let mut references = FxHashSet::default();
     let graph = graph.read_graphs().await?;
-    graph.traverse_all_edges_unordered(|(source, ref_data, edge), target| {
-        match &ref_data.import {
-            ImportUsage::Global => {
-                // has to always be included
-            }
-            ImportUsage::Exports(exports) => {
-                debug_assert!(!exports.is_empty());
-                let source_used_exports = export_usage_info.used_exports_ref(source);
+    graph.traverse_all_edges_unordered(|parent, target| {
+        if let Some((source, ref_data, edge)) = parent {
+            match &ref_data.import {
+                ImportUsage::Global => {
+                    // has to always be included
+                }
+                ImportUsage::Exports(exports) => {
+                    debug_assert!(!exports.is_empty());
+                    let source_used_exports = export_usage_info.used_exports_ref(source);
 
-                if exports
-                    .iter()
-                    .all(|e| !source_used_exports.is_export_used(e))
-                {
-                    unused_references_name.insert((source, ref_data.export.clone(), target));
+                    if exports
+                        .iter()
+                        .all(|e| !source_used_exports.is_export_used(e))
+                    {
+                        unused_references_name.insert((source, ref_data.export.clone(), target));
 
-                    edges.insert(edge);
-                    references.insert(ref_data.reference);
+                        edges.insert(edge);
+                        references.insert(ref_data.reference);
+                    }
                 }
             }
         }

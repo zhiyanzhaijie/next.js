@@ -14,10 +14,14 @@ pub async fn compute_export_usage_info(
 ) -> Result<Vc<ExportUsageInfo>> {
     let mut used_exports = FxHashMap::<_, ModuleExportUsageInfo>::default();
     let graph = graph.read_graphs().await?;
-    graph.traverse_all_edges_unordered(|(_, ref_data, _), target| {
+    graph.traverse_all_edges_unordered(|parent, target| {
         let e = used_exports.entry(target).or_default();
-
-        e.add(&ref_data.export);
+        if let Some((_, ref_data, _)) = parent {
+            e.add(&ref_data.export);
+        } else {
+            // Entry
+            *e = ModuleExportUsageInfo::All;
+        }
 
         Ok(())
     })?;
@@ -103,15 +107,14 @@ impl ExportUsageInfo {
         module: ResolvedVc<Box<dyn Module>>,
     ) -> Result<Vc<ModuleExportUsage>> {
         let is_circuit_breaker = self.circuit_breakers.contains(&module);
-        let export_usage = if let Some(exports) = self.used_exports.get(&module) {
-            exports.clone().resolved_cell()
-        } else {
-            // We exclude template files from tree shaking because they are entrypoints to the
-            // module graph.
-            ModuleExportUsageInfo::all().to_resolved().await?
+        let Some(exports) = self.used_exports.get(&module) else {
+            anyhow::bail!(
+                "export usage not found for module: {:?}",
+                module.ident_string().await?
+            );
         };
         Ok(ModuleExportUsage {
-            export_usage,
+            export_usage: exports.clone().resolved_cell(),
             is_circuit_breaker,
         }
         .cell())

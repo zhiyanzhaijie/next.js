@@ -1147,25 +1147,21 @@ impl ModuleGraphRef {
     pub fn traverse_all_edges_unordered(
         &self,
         mut visitor: impl FnMut(
-            (ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex),
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
             ResolvedVc<Box<dyn Module>>,
         ) -> Result<()>,
     ) -> Result<()> {
-        for (graph_idx, graph) in self.graphs.iter().enumerate() {
-            let graph = &graph.graph;
-            for edge in graph.edge_references() {
-                let idx = GraphEdgeIndex::new(graph_idx as u32, edge.id());
-                // TODO this ignores the edges directly ignored by unused_references, but not the
-                // subgraphs that become disconnected because of that.
-                if self.unused_references.contains_edge(&idx) {
-                    continue;
-                }
-                let source = graph.node_weight(edge.source()).unwrap().module();
-                let target = graph.node_weight(edge.target()).unwrap().module();
-                visitor((source, edge.weight(), idx), target)?;
-            }
-        }
-        Ok(())
+        let entries = self.graphs.iter().flat_map(|g| g.entry_modules());
+
+        self.traverse_edges_from_entries_dfs(
+            entries,
+            &mut (),
+            |parent, target, _| {
+                visitor(parent, target)?;
+                Ok(GraphTraversalAction::Continue)
+            },
+            |_, _, _| Ok(()),
+        )
     }
 
     /// Traverses all reachable edges in dfs order. The preorder visitor can be used to
@@ -1191,12 +1187,12 @@ impl ModuleGraphRef {
         entries: impl IntoIterator<Item = ResolvedVc<Box<dyn Module>>>,
         state: &mut S,
         mut visit_preorder: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
             ResolvedVc<Box<dyn Module>>,
             &mut S,
         ) -> Result<GraphTraversalAction>,
         mut visit_postorder: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
             ResolvedVc<Box<dyn Module>>,
             &mut S,
         ) -> Result<()>,
@@ -1224,6 +1220,7 @@ impl ModuleGraphRef {
                         .graph
                         .edge_weight(parent_edge)
                         .unwrap(),
+                    GraphEdgeIndex::new(parent_node.graph_idx, parent_edge),
                 )),
                 None => None,
             };
@@ -1819,14 +1816,14 @@ pub mod tests {
                     &mut (),
                     |parent, target, _| {
                         preorder_visits.push((
-                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(GraphTraversalAction::Continue)
                     },
                     |parent, target, _| {
                         postorder_visits.push((
-                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(())
@@ -1879,14 +1876,14 @@ pub mod tests {
                     &mut (),
                     |parent, target, _| {
                         preorder_visits.push((
-                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(GraphTraversalAction::Continue)
                     },
                     |parent, target, _| {
                         postorder_visits.push((
-                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(())

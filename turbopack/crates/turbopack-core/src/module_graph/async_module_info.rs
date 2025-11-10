@@ -79,7 +79,7 @@ async fn compute_async_module_info_single(
         &mut (),
         |_, _, _| Ok(GraphTraversalAction::Continue),
         |parent_info, module, _| {
-            let Some((parent_module, ref_data)) = parent_info else {
+            let Some((parent_module, ref_data, _)) = parent_info else {
                 // An entry module
                 return Ok(());
             };
