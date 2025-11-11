@@ -436,9 +436,12 @@ async fn run_test_operation(resource: RcStr) -> Result<Vc<FileSystemPath>> {
 
     let binding_usage = if options.remove_unused_imports || options.remove_unused_exports {
         Some(
-            compute_binding_usage_info(module_graph.to_resolved().await?)
-                .resolve_strongly_consistent()
-                .await?,
+            compute_binding_usage_info(
+                module_graph.to_resolved().await?,
+                options.remove_unused_imports,
+            )
+            .resolve_strongly_consistent()
+            .await?,
         )
     } else {
         None

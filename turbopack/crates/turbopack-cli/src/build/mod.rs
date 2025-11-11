@@ -314,7 +314,7 @@ async fn build_internal(
             .to_resolved()
             .await?,
     );
-    let binding_usage = compute_binding_usage_info(module_graph.to_resolved().await?)
+    let binding_usage = compute_binding_usage_info(module_graph.to_resolved().await?, true)
         .resolve_strongly_consistent()
         .await?;
     module_graph = module_graph.without_unused_references(*binding_usage);

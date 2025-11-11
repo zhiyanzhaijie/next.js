@@ -70,7 +70,7 @@ impl BindingUsageInfo {
                 return Ok(ModuleExportUsage::all());
             }
 
-            bail!("export usage not found for module: {ident:?}",);
+            bail!("export usage not found for module: {ident:?}");
         };
         Ok(ModuleExportUsage {
             export_usage: exports.clone().resolved_cell(),
@@ -83,6 +83,7 @@ impl BindingUsageInfo {
 #[turbo_tasks::function(operation)]
 pub async fn compute_binding_usage_info(
     graph: ResolvedVc<ModuleGraph>,
+    remove_unused_imports: bool,
 ) -> Result<Vc<BindingUsageInfo>> {
     let mut used_exports = FxHashMap::<_, ModuleExportUsageInfo>::default();
     let mut debug_unused_references_name = FxHashSet::<(
@@ -92,6 +93,25 @@ pub async fn compute_binding_usage_info(
     )>::default();
     let mut unused_references_edges = FxHashSet::default();
     let mut unused_references = FxHashSet::default();
+
+    if graph.await?.binding_usage.is_some() {
+        // If the graph already has binding usage info, return it directly. This is unfortunately
+        // easy to do with
+        // ```
+        // fn get_module_graph(){
+        //   let graph = ....;
+        //   let graph = graph.without_unused_references(compute_binding_usage_info(graph));
+        //   return graph
+        // }
+        //
+        // compute_binding_usage_info(get_module_graph())
+        // ```
+        panic!(
+            "don't run compute_binding_usage_info on a graph after calling \
+             without_unused_references"
+        );
+    }
+
     let graph = graph.read_graphs().await?;
 
     let entries = graph.graphs.iter().flat_map(|g| g.entry_modules());
@@ -106,25 +126,36 @@ pub async fn compute_binding_usage_info(
                 return Ok(GraphTraversalAction::Continue);
             };
 
-            // If the current edge is an unused import, skip it
-            match &ref_data.import {
-                ImportUsage::Exports(exports) => {
-                    debug_assert!(!exports.is_empty());
-                    let source_used_exports = used_exports.get(&parent).unwrap();
-                    if exports
-                        .iter()
-                        .all(|e| !source_used_exports.is_export_used(e))
-                    {
-                        debug_unused_references_name.insert((
-                            parent,
-                            ref_data.export.clone(),
-                            target,
-                        ));
-                        unused_references_edges.insert(edge);
-                        unused_references.insert(ref_data.reference);
+            if remove_unused_imports {
+                // If the current edge is an unused import, skip it
+                match &ref_data.import {
+                    ImportUsage::Exports(exports) => {
+                        let source_used_exports = used_exports.get(&parent).unwrap();
+                        if exports
+                            .iter()
+                            .all(|e| !source_used_exports.is_export_used(e))
+                        {
+                            debug_unused_references_name.insert((
+                                parent,
+                                ref_data.export.clone(),
+                                target,
+                            ));
+                            unused_references_edges.insert(edge);
+                            unused_references.insert(ref_data.reference);
 
-                        return Ok(GraphTraversalAction::Skip);
-                    } else {
+                            return Ok(GraphTraversalAction::Skip);
+                        } else {
+                            debug_unused_references_name.remove(&(
+                                parent,
+                                ref_data.export.clone(),
+                                target,
+                            ));
+                            unused_references_edges.remove(&edge);
+                            unused_references.remove(&ref_data.reference);
+                            // Continue, add eport
+                        }
+                    }
+                    ImportUsage::Global => {
                         debug_unused_references_name.remove(&(
                             parent,
                             ref_data.export.clone(),
@@ -132,11 +163,8 @@ pub async fn compute_binding_usage_info(
                         ));
                         unused_references_edges.remove(&edge);
                         unused_references.remove(&ref_data.reference);
-                        // Continue, add eport
+                        // Continue, has to always be included
                     }
-                }
-                ImportUsage::Global => {
-                    // Continue, has to always be included
                 }
             }
 
