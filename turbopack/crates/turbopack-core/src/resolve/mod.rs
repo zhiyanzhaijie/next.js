@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use auto_hash_map::AutoSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Level};
@@ -114,8 +115,22 @@ pub enum ImportUsage {
     ///
     /// (This is only ever set on `ModulePart::Export` references. Side effects are handled via
     /// `ModulePart::Evaluation` references, which always have `ImportUsage::Global`.)
-    Exports(Vec<RcStr>),
+    Exports(AutoSet<RcStr>),
 }
+impl ImportUsage {
+    pub fn add_export(&mut self, user: &RcStr) {
+        match self {
+            ImportUsage::Exports(set) => {
+                set.insert(user.clone());
+            }
+            ImportUsage::Global => {}
+        }
+    }
+    pub fn make_global(&mut self) {
+        *self = ImportUsage::Global;
+    }
+}
+
 #[turbo_tasks::value_impl]
 impl ImportUsage {
     #[turbo_tasks::function]

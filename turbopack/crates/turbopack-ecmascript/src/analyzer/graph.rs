@@ -31,7 +31,7 @@ use super::{
 use crate::{
     AnalyzeMode, SpecifiedModuleType,
     analyzer::{WellKnownObjectKind, is_unresolved},
-    references::constant_value::parse_single_expr_lit,
+    references::{constant_value::parse_single_expr_lit, for_each_ident_in_pat},
     utils::{AstPathRange, unparen},
 };
 
@@ -316,32 +316,26 @@ impl VarMeta {
 }
 
 #[derive(Clone, Debug)]
-pub enum ImportUsage {
+pub enum DeclUsage {
     Global,
-    OnlyExports(FxHashSet<Id>),
+    Bindings(FxHashSet<Id>),
 }
-impl ImportUsage {
-    fn add_export(&mut self, user: &Id) {
+impl Default for DeclUsage {
+    fn default() -> Self {
+        DeclUsage::Bindings(Default::default())
+    }
+}
+impl DeclUsage {
+    fn add_usage(&mut self, user: &Id) {
         match self {
-            ImportUsage::OnlyExports(set) => {
+            Self::Bindings(set) => {
                 set.insert(user.clone());
             }
-            ImportUsage::Global => {}
+            Self::Global => {}
         }
     }
     fn make_global(&mut self) {
-        *self = ImportUsage::Global;
-    }
-}
-
-impl From<ImportUsage> for turbopack_core::resolve::ImportUsage {
-    fn from(value: ImportUsage) -> Self {
-        match value {
-            ImportUsage::OnlyExports(exports) => {
-                Self::Exports(exports.into_iter().map(|id| RcStr::from(&*id.0)).collect())
-            }
-            ImportUsage::Global => Self::Global,
-        }
+        *self = Self::Global;
     }
 }
 
@@ -355,9 +349,11 @@ pub struct VarGraph {
     pub effects: Vec<Effect>,
 
     // ident -> immediate usage (top level decl)
-    pub top_level_mappings: FxHashMap<Id, FxHashSet<Id>>,
+    pub decl_usages: FxHashMap<Id, DeclUsage>,
     // import -> immediate usage (top level decl)
-    pub import_usages: FxHashMap<usize, ImportUsage>,
+    pub import_usages: FxHashMap<usize, DeclUsage>,
+    // export name -> top level decl
+    pub exports: FxHashMap<Atom, Id>,
 }
 
 impl VarGraph {
@@ -382,8 +378,9 @@ pub fn create_graph(
         values: Default::default(),
         free_var_ids: Default::default(),
         effects: Default::default(),
-        top_level_mappings: Default::default(),
+        decl_usages: Default::default(),
         import_usages: Default::default(),
+        exports: Default::default(),
     };
 
     m.visit_with_ast_path(
@@ -2271,9 +2268,9 @@ impl VisitAstPath for Analyzer<'_> {
                 .data
                 .import_usages
                 .entry(esm_reference_index)
-                .or_insert_with(|| ImportUsage::OnlyExports(Default::default()));
+                .or_default();
             if let Some(top_level) = self.state.cur_top_level_decl_name() {
-                usage.add_export(top_level);
+                usage.add_usage(top_level);
             } else {
                 usage.make_global();
             }
@@ -2325,15 +2322,22 @@ impl VisitAstPath for Analyzer<'_> {
             })
         }
 
-        if !is_unresolved(ident, self.eval_context.unresolved_mark)
-            && let Some(top_level) = self.state.cur_top_level_decl_name()
-            && !(ident.sym == top_level.0 && ident.ctxt == top_level.1)
-        {
-            self.data
-                .top_level_mappings
-                .entry(ident.to_id())
-                .or_default()
-                .insert(top_level.clone());
+        if !is_unresolved(ident, self.eval_context.unresolved_mark) {
+            if let Some(top_level) = self.state.cur_top_level_decl_name() {
+                if !(ident.sym == top_level.0 && ident.ctxt == top_level.1) {
+                    self.data
+                        .decl_usages
+                        .entry(ident.to_id())
+                        .or_default()
+                        .add_usage(top_level);
+                }
+            } else {
+                self.data
+                    .decl_usages
+                    .entry(ident.to_id())
+                    .or_default()
+                    .make_global();
+            }
         }
     }
 
@@ -2717,6 +2721,53 @@ impl VisitAstPath for Analyzer<'_> {
 
         self.effects = prev_effects;
         self.early_return_stack = prev_early_return_stack;
+    }
+
+    fn visit_export_decl<'ast: 'r, 'r>(
+        &mut self,
+        node: &'ast ExportDecl,
+        ast_path: &mut swc_core::ecma::visit::AstNodePath<'r>,
+    ) {
+        match &node.decl {
+            Decl::Class(node) => {
+                self.data
+                    .exports
+                    .insert(node.ident.sym.clone(), node.ident.to_id());
+            }
+            Decl::Fn(node) => {
+                self.data
+                    .exports
+                    .insert(node.ident.sym.clone(), node.ident.to_id());
+            }
+            Decl::Var(node) => {
+                for VarDeclarator { name, .. } in &node.decls {
+                    for_each_ident_in_pat(name, &mut |name, ctxt| {
+                        self.data.exports.insert(name.clone(), (name.clone(), ctxt));
+                    });
+                }
+            }
+            _ => {}
+        };
+        node.visit_children_with_ast_path(self, ast_path);
+    }
+
+    fn visit_export_named_specifier<'ast: 'r, 'r>(
+        &mut self,
+        node: &'ast ExportNamedSpecifier,
+        ast_path: &mut swc_core::ecma::visit::AstNodePath<'r>,
+    ) {
+        let export_name = match &node.exported {
+            Some(ident) => ident.atom().clone(),
+            None => node.orig.atom().clone(),
+        };
+        self.data.exports.insert(
+            export_name,
+            match &node.orig {
+                ModuleExportName::Ident(ident) => ident.to_id(),
+                ModuleExportName::Str(_) => unreachable!("exporting a string should be impossible"),
+            },
+        );
+        node.visit_children_with_ast_path(self, ast_path);
     }
 }
 

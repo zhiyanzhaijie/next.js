@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use swc_core::{
     atoms::{Atom, atom},
     common::{
-        GLOBALS, Globals, Span, Spanned,
+        GLOBALS, Globals, Span, Spanned, SyntaxContext,
         comments::{CommentKind, Comments},
         errors::{DiagnosticId, HANDLER, Handler},
         pass::AstNodePath,
@@ -81,7 +81,7 @@ use turbopack_core::{
     reference::{ModuleReference, ModuleReferences},
     reference_type::{CommonJsReferenceSubType, ReferenceType},
     resolve::{
-        FindContextFileResult, ModulePart, find_context_file,
+        FindContextFileResult, ImportUsage, ModulePart, find_context_file,
         origin::{PlainResolveOrigin, ResolveOrigin, ResolveOriginExt},
         parse::Request,
         pattern::Pattern,
@@ -136,7 +136,7 @@ use crate::{
     analyzer::{
         ConstantNumber, ConstantString, JsValueUrlKind, RequireContextValue,
         builtin::early_replace_builtin,
-        graph::{ConditionalKind, EffectArg, EvalContext, ImportUsage, VarGraph},
+        graph::{ConditionalKind, DeclUsage, EffectArg, EvalContext, VarGraph},
         imports::{ImportAnnotations, ImportAttributes, ImportedSymbol, Reexport},
         parse_require_context,
         top_level_await::has_top_level_await,
@@ -752,23 +752,44 @@ async fn analyze_ecmascript_module_internal(
         FxHashMap::with_capacity_and_hasher(var_graph.import_usages.len(), Default::default());
     for (reference, usage) in &var_graph.import_usages {
         // TODO make this more efficient, i.e. cache the result?
-        if let ImportUsage::OnlyExports(ids) = usage {
+        if let DeclUsage::Bindings(ids) = usage {
             // compute transitive closure of `ids` over `top_level_mappings`
             let mut visited = ids.clone();
             let mut stack = ids.iter().collect::<Vec<_>>();
-
+            let mut has_global_usage = false;
             while let Some(id) = stack.pop() {
-                if let Some(callers) = var_graph.top_level_mappings.get(id) {
-                    for caller in callers {
-                        if visited.insert(caller.clone()) {
-                            stack.push(caller);
+                match var_graph.decl_usages.get(id) {
+                    Some(DeclUsage::Global) => {
+                        has_global_usage = true;
+                        break;
+                    }
+                    Some(DeclUsage::Bindings(callers)) => {
+                        for caller in callers {
+                            if visited.insert(caller.clone()) {
+                                stack.push(caller);
+                            }
                         }
                     }
+                    _ => {}
                 }
             }
 
-            // TODO filter out the non-export declarations here
-            import_usage.insert(*reference, ImportUsage::OnlyExports(visited));
+            // Collect all `visited` declarations which are exported
+            import_usage.insert(
+                *reference,
+                if has_global_usage {
+                    ImportUsage::Global
+                } else {
+                    ImportUsage::Exports(
+                        var_graph
+                            .exports
+                            .iter()
+                            .filter(|(_, id)| visited.contains(*id))
+                            .map(|(exported, _)| exported.as_str().into())
+                            .collect(),
+                    )
+                },
+            );
         }
     }
 
@@ -812,11 +833,7 @@ async fn analyze_ecmascript_module_internal(
                     )
                     .then(ModulePart::exports),
                 },
-                import_usage
-                    .get(&i)
-                    .cloned()
-                    .map(Into::into)
-                    .unwrap_or_default(),
+                import_usage.get(&i).cloned().unwrap_or_default(),
                 import_externals,
             )
             .resolved_cell();
@@ -1470,6 +1487,8 @@ async fn analyze_ecmascript_module_internal(
                             options.tree_shaking_mode,
                             Some(TreeShakingMode::ReexportsOnly)
                         ) {
+                            // TODO move this logic into Effect creation itself and don't create new
+                            // references after the fact here.
                             let original_reference = r.await?;
                             if original_reference.export_name.is_none()
                                 && export.is_some()
@@ -1488,8 +1507,11 @@ async fn analyze_ecmascript_module_internal(
                                                 original_reference.issue_source,
                                                 original_reference.annotations.clone(),
                                                 Some(ModulePart::export(export.clone())),
-                                                // TODO this rewriting is annoying
-                                                ImportUsage::Global.into(),
+                                                // TODO this is correct, but an overapproximation.
+                                                // We should have individual import_usage data for
+                                                // each export. This would be fixed by moving this
+                                                // logic earlier (see TODO above)
+                                                original_reference.import_usage.clone(),
                                                 original_reference.import_externals,
                                             )
                                             .resolved_cell()
@@ -2930,7 +2952,7 @@ async fn handle_free_var_reference(
                             ) => export.clone().map(ModulePart::export),
                             None => None,
                         },
-                        ImportUsage::Global.into(),
+                        ImportUsage::Global,
                         state.import_externals,
                     )
                     .resolved_cell())
@@ -3557,10 +3579,10 @@ fn as_parent_path(ast_path: &AstNodePath<AstParentNodeRef<'_>>) -> Vec<AstParent
     ast_path.iter().map(|n| n.kind()).collect()
 }
 
-fn for_each_ident_in_pat(pat: &Pat, f: &mut impl FnMut(RcStr)) {
+pub(crate) fn for_each_ident_in_pat(pat: &Pat, f: &mut impl FnMut(&Atom, SyntaxContext)) {
     match pat {
         Pat::Ident(BindingIdent { id, .. }) => {
-            f(id.sym.as_str().into());
+            f(&id.sym, id.ctxt);
         }
         Pat::Array(ArrayPat { elems, .. }) => elems.iter().for_each(|e| {
             if let Some(e) = e {
@@ -3576,7 +3598,7 @@ fn for_each_ident_in_pat(pat: &Pat, f: &mut impl FnMut(RcStr)) {
                     for_each_ident_in_pat(value, f);
                 }
                 ObjectPatProp::Assign(AssignPatProp { key, .. }) => {
-                    f(key.sym.as_str().into());
+                    f(&key.sym, key.ctxt);
                 }
                 ObjectPatProp::Rest(RestPat { arg, .. }) => {
                     for_each_ident_in_pat(arg, f);
@@ -3709,8 +3731,8 @@ impl VisitAstPath for ModuleReferencesVisitor<'_> {
                     };
                     let decls = &*var_decl.decls;
                     decls.iter().for_each(|VarDeclarator { name, .. }| {
-                        for_each_ident_in_pat(name, &mut |name| {
-                            insert_export_binding(name, liveness)
+                        for_each_ident_in_pat(name, &mut |name, _| {
+                            insert_export_binding(name.as_str().into(), liveness)
                         })
                     });
                 }
