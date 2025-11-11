@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use auto_hash_map::AutoSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use turbo_rcstr::RcStr;
@@ -60,10 +60,17 @@ impl BindingUsageInfo {
     ) -> Result<Vc<ModuleExportUsage>> {
         let is_circuit_breaker = self.export_circuit_breakers.contains(&module);
         let Some(exports) = self.used_exports.get(&module) else {
-            anyhow::bail!(
-                "export usage not found for module: {:?}",
-                module.ident_string().await?
-            );
+            // There are some module that are codegened, but not referenced in the module graph,
+            let ident = module.ident_string().await?;
+            if ident.contains(".wasm_.loader.mjs") || ident.contains("/__nextjs-internal-proxy.") {
+                // Both the turbopack-wasm `ModuleChunkItem` and `EcmascriptClientReferenceModule`
+                // do `self.slightly_different_module().as_chunk_item()`, so the
+                // module that codegen sees isn't actually in the module graph.
+                // TODO fix these cases
+                return Ok(ModuleExportUsage::all());
+            }
+
+            bail!("export usage not found for module: {ident:?}",);
         };
         Ok(ModuleExportUsage {
             export_usage: exports.clone().resolved_cell(),
