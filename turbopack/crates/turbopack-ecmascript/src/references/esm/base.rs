@@ -27,7 +27,7 @@ use turbopack_core::{
     reference::ModuleReference,
     reference_type::{EcmaScriptModulesReferenceSubType, ImportWithType},
     resolve::{
-        ExportUsage, ExternalType, ImportUsage, ModulePart, ModuleResolveResult,
+        BindingUsage, ExportUsage, ExternalType, ImportUsage, ModulePart, ModuleResolveResult,
         ModuleResolveResultItem, RequestKey,
         origin::{ResolveOrigin, ResolveOriginExt},
         parse::Request,
@@ -512,17 +512,16 @@ impl ChunkableModuleReference for EsmAssetReference {
     }
 
     #[turbo_tasks::function]
-    fn export_usage(&self) -> Vc<ExportUsage> {
-        match &self.export_name {
-            Some(ModulePart::Export(export_name)) => ExportUsage::named(export_name.clone()),
-            Some(ModulePart::Evaluation) => ExportUsage::evaluation(),
-            _ => ExportUsage::all(),
+    fn binding_usage(&self) -> Vc<BindingUsage> {
+        BindingUsage {
+            import: self.import_usage.clone(),
+            export: match &self.export_name {
+                Some(ModulePart::Export(export_name)) => ExportUsage::Named(export_name.clone()),
+                Some(ModulePart::Evaluation) => ExportUsage::Evaluation,
+                _ => ExportUsage::All,
+            },
         }
-    }
-
-    #[turbo_tasks::function]
-    fn import_usage(&self) -> Vc<ImportUsage> {
-        self.import_usage.clone().cell()
+        .cell()
     }
 }
 
@@ -583,7 +582,7 @@ impl EsmAssetReference {
                     }
 
                     if merged_index.is_some()
-                        && matches!(*self.export_usage().await?, ExportUsage::Evaluation)
+                        && matches!(this.export_name, Some(ModulePart::Evaluation))
                     {
                         // No need to import, the module was already executed and is available in
                         // the same scope hoisting group (unless it's a

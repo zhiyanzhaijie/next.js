@@ -62,7 +62,7 @@ where
             if let Some((parent_node, r)) = parent {
                 edges.push((
                     parent_node,
-                    RcStr::from(format!("{}: {}", r.chunking_type, r.export)),
+                    RcStr::from(format!("{}: {}", r.chunking_type, r.binding_usage.export)),
                     current,
                 ));
             }

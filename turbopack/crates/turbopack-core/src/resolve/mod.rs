@@ -105,6 +105,21 @@ impl ModuleResolveResultItem {
 }
 
 #[turbo_tasks::value(shared)]
+#[derive(Clone, Debug, Hash, Default)]
+pub struct BindingUsage {
+    pub import: ImportUsage,
+    pub export: ExportUsage,
+}
+
+#[turbo_tasks::value_impl]
+impl BindingUsage {
+    #[turbo_tasks::function]
+    pub fn all() -> Vc<Self> {
+        Self::default().cell()
+    }
+}
+
+#[turbo_tasks::value(shared)]
 #[derive(Debug, Clone, Default, Hash)]
 pub enum ImportUsage {
     /// This import is used by some side effect in the module (and can't be tree shaken).

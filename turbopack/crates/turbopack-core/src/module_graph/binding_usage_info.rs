@@ -128,7 +128,7 @@ pub async fn compute_binding_usage_info(
 
             if remove_unused_imports {
                 // If the current edge is an unused import, skip it
-                match &ref_data.import {
+                match &ref_data.binding_usage.import {
                     ImportUsage::Exports(exports) => {
                         let source_used_exports = used_exports.get(&parent).unwrap();
                         if exports
@@ -137,7 +137,7 @@ pub async fn compute_binding_usage_info(
                         {
                             debug_unused_references_name.insert((
                                 parent,
-                                ref_data.export.clone(),
+                                ref_data.binding_usage.export.clone(),
                                 target,
                             ));
                             unused_references_edges.insert(edge);
@@ -147,7 +147,7 @@ pub async fn compute_binding_usage_info(
                         } else {
                             debug_unused_references_name.remove(&(
                                 parent,
-                                ref_data.export.clone(),
+                                ref_data.binding_usage.export.clone(),
                                 target,
                             ));
                             unused_references_edges.remove(&edge);
@@ -158,7 +158,7 @@ pub async fn compute_binding_usage_info(
                     ImportUsage::Global => {
                         debug_unused_references_name.remove(&(
                             parent,
-                            ref_data.export.clone(),
+                            ref_data.binding_usage.export.clone(),
                             target,
                         ));
                         unused_references_edges.remove(&edge);
@@ -170,7 +170,7 @@ pub async fn compute_binding_usage_info(
 
             let entry = used_exports.entry(target);
             let is_first_visit = matches!(entry, Entry::Vacant(_));
-            if entry.or_default().add(&ref_data.export) || is_first_visit {
+            if entry.or_default().add(&ref_data.binding_usage.export) || is_first_visit {
                 // First visit, or the used exports changed. This can cause more imports to get used
                 // downstream.
                 Ok(GraphTraversalAction::Continue)
