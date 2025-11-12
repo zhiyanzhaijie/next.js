@@ -37,7 +37,6 @@ pub async fn get_global_module_id_strategy(
                     chunking_type: ChunkingType::Async,
                     ..
                 },
-                _,
             )) = parent
             {
                 let module = ResolvedVc::try_sidecast::<Box<dyn ChunkableModule>>(current)

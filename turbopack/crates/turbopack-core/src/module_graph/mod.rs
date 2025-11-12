@@ -1143,7 +1143,7 @@ impl ModuleGraphRef {
     pub fn traverse_all_edges_unordered(
         &self,
         mut visitor: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
             ResolvedVc<Box<dyn Module>>,
         ) -> Result<()>,
     ) -> Result<()> {
@@ -1183,12 +1183,12 @@ impl ModuleGraphRef {
         entries: impl IntoIterator<Item = ResolvedVc<Box<dyn Module>>>,
         state: &mut S,
         mut visit_preorder: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
             ResolvedVc<Box<dyn Module>>,
             &mut S,
         ) -> Result<GraphTraversalAction>,
         mut visit_postorder: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
             ResolvedVc<Box<dyn Module>>,
             &mut S,
         ) -> Result<()>,
@@ -1216,7 +1216,6 @@ impl ModuleGraphRef {
                         .graph
                         .edge_weight(parent_edge)
                         .unwrap(),
-                    GraphEdgeIndex::new(parent_node.graph_idx, parent_edge),
                 )),
                 None => None,
             };
@@ -1818,14 +1817,14 @@ pub mod tests {
                     &mut (),
                     |parent, target, _| {
                         preorder_visits.push((
-                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(GraphTraversalAction::Continue)
                     },
                     |parent, target, _| {
                         postorder_visits.push((
-                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(())
@@ -1878,14 +1877,14 @@ pub mod tests {
                     &mut (),
                     |parent, target, _| {
                         preorder_visits.push((
-                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(GraphTraversalAction::Continue)
                     },
                     |parent, target, _| {
                         postorder_visits.push((
-                            parent.map(|(node, _, _)| module_to_name.get(&node).unwrap().clone()),
+                            parent.map(|(node, _)| module_to_name.get(&node).unwrap().clone()),
                             module_to_name.get(&target).unwrap().clone(),
                         ));
                         Ok(())

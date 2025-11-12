@@ -177,7 +177,7 @@ impl NextDynamicGraph {
                 &mut (),
                 |parent_info, node, _| {
                     let module = node;
-                    let Some((parent_node, _, _)) = parent_info else {
+                    let Some((parent_node, _)) = parent_info else {
                         state_map.insert(module, VisitState::Entry);
                         return Ok(GraphTraversalAction::Continue);
                     };
@@ -789,7 +789,7 @@ async fn validate_pages_css_imports_individual(
 
             // If we're at a root node, there is nothing importing this module and we can skip
             // any further validations.
-            let Some((parent_node, _, _)) = parent_info else {
+            let Some((parent_node, _)) = parent_info else {
                 return Ok(GraphTraversalAction::Continue);
             };
             let parent_module = parent_node;
