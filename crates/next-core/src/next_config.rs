@@ -1758,12 +1758,12 @@ impl NextConfig {
     }
 
     #[turbo_tasks::function]
-    pub async fn turbopack_remove_unused_imports(&self, _mode: Vc<NextMode>) -> Result<Vc<bool>> {
+    pub async fn turbopack_remove_unused_imports(&self, mode: Vc<NextMode>) -> Result<Vc<bool>> {
         Ok(Vc::cell(
             self.experimental
                 .turbopack_remove_unused_imports
                 // TODO enable by default once stable
-                .unwrap_or(false),
+                .unwrap_or(matches!(*mode.await?, NextMode::Build)),
         ))
     }
 
