@@ -430,11 +430,16 @@ impl SingleModuleGraph {
         self.graph.node_references()
     }
 
-    pub fn read(self: &ReadRef<SingleModuleGraph>) -> ModuleGraphRef {
+    pub fn read(
+        self: &ReadRef<SingleModuleGraph>,
+        graph_idx: Option<u32>,
+        binding_usage: Option<ReadRef<BindingUsageInfo>>,
+    ) -> ModuleGraphRef {
         ModuleGraphRef {
             graphs: vec![self.clone()],
             skip_visited_module_children: true,
-            binding_usage: None,
+            graph_idx_override: graph_idx,
+            binding_usage,
         }
     }
 
@@ -761,7 +766,7 @@ impl ImportTracer for ModuleGraphImportTracer {
 pub struct ModuleGraph {
     pub graphs: Vec<ResolvedVc<SingleModuleGraph>>,
 
-    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
+    pub binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
 }
 
 #[turbo_tasks::value_impl]
@@ -851,21 +856,22 @@ impl ModuleGraph {
         let async_modules_info = self.async_module_info().await?;
 
         let entry = graph_ref.get_entry(module)?;
-        let referenced_modules = iter_graphs_neighbors_rev(graphs, entry, &graph_ref.binding_usage)
-            .filter(|(edge_idx, _)| {
-                let ty = graphs[entry.graph_idx()]
-                    .graph
-                    .edge_weight(*edge_idx)
-                    .unwrap();
-                ty.chunking_type.is_inherit_async()
-            })
-            .map(|(_, child_idx)| anyhow::Ok(graph_ref.get_node(child_idx)?.module()))
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .rev()
-            .filter(|m| async_modules_info.contains(m))
-            .map(|m| *m)
-            .collect();
+        let referenced_modules =
+            iter_graphs_neighbors_rev(graphs, entry, &graph_ref.binding_usage, &None)
+                .filter(|(edge_idx, _)| {
+                    let ty = graphs[entry.graph_idx()]
+                        .graph
+                        .edge_weight(*edge_idx)
+                        .unwrap();
+                    ty.chunking_type.is_inherit_async()
+                })
+                .map(|(_, child_idx)| anyhow::Ok(graph_ref.get_node(child_idx)?.module()))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .rev()
+                .filter(|m| async_modules_info.contains(m))
+                .map(|m| *m)
+                .collect();
 
         Ok(AsyncModuleInfo::new(referenced_modules))
     }
@@ -894,6 +900,7 @@ impl ModuleGraph {
         Ok(ModuleGraphRef {
             graphs: this.graphs.iter().try_join().await?,
             skip_visited_module_children: false,
+            graph_idx_override: None,
             binding_usage: if let Some(binding_usage) = this.binding_usage {
                 Some(binding_usage.await?)
             } else {
@@ -910,6 +917,8 @@ pub struct ModuleGraphRef {
     // Whether to simply ignore SingleModuleGraphNode::VisitedModule during traversals. For single
     // module graph usecases, this is what you want. For the whole graph, there should be an error.
     skip_visited_module_children: bool,
+
+    pub graph_idx_override: Option<u32>,
 
     pub binding_usage: Option<ReadRef<BindingUsageInfo>>,
 }
@@ -1010,8 +1019,13 @@ impl ModuleGraphRef {
                     {
                         let current = current_node.target_idx().unwrap_or(current);
                         stack.extend(
-                            iter_graphs_neighbors_rev(graphs, current, &self.binding_usage)
-                                .map(|(_, child)| (Pass::ExpandAndVisit, child)),
+                            iter_graphs_neighbors_rev(
+                                graphs,
+                                current,
+                                &self.binding_usage,
+                                &self.graph_idx_override,
+                            )
+                            .map(|(_, child)| (Pass::ExpandAndVisit, child)),
                         );
                     }
                 }
@@ -1055,7 +1069,12 @@ impl ModuleGraphRef {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
                 let graph = &graphs[node.graph_idx()].graph;
-                for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+                for (edge, succ) in iter_graphs_neighbors_rev(
+                    graphs,
+                    node,
+                    &self.binding_usage,
+                    &self.graph_idx_override,
+                ) {
                     let succ_weight = self.get_node(succ)?;
                     let edge_weight = graph.edge_weight(edge).unwrap();
                     let action = visitor(
@@ -1108,7 +1127,12 @@ impl ModuleGraphRef {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
                 let graph = &graphs[node.graph_idx()].graph;
-                for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+                for (edge, succ) in iter_graphs_neighbors_rev(
+                    graphs,
+                    node,
+                    &self.binding_usage,
+                    &self.graph_idx_override,
+                ) {
                     let succ_weight = self.get_node(succ)?;
                     let edge_weight = graph.edge_weight(edge).unwrap();
                     let action = visitor(
@@ -1233,11 +1257,15 @@ impl ModuleGraphRef {
                     {
                         let current = current_node.target_idx().unwrap_or(current);
                         stack.extend(
-                            iter_graphs_neighbors_rev(graphs, current, &self.binding_usage).map(
-                                |(edge, child)| {
-                                    (Pass::ExpandAndVisit, Some((current, edge)), child)
-                                },
-                            ),
+                            iter_graphs_neighbors_rev(
+                                graphs,
+                                current,
+                                &self.binding_usage,
+                                &self.graph_idx_override,
+                            )
+                            .map(|(edge, child)| {
+                                (Pass::ExpandAndVisit, Some((current, edge)), child)
+                            }),
                         );
                     }
                 }
@@ -1351,7 +1379,12 @@ impl ModuleGraphRef {
             visit_count += 1;
 
             let graph = &graphs[node.graph_idx()].graph;
-            for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+            for (edge, succ) in iter_graphs_neighbors_rev(
+                graphs,
+                node,
+                &self.binding_usage,
+                &self.graph_idx_override,
+            ) {
                 let succ_weight = self.get_node(succ)?;
 
                 let edge_weight = graph.edge_weight(edge).unwrap();
@@ -1384,6 +1417,7 @@ fn iter_graphs_neighbors_rev<'a>(
     graphs: &'a [ReadRef<SingleModuleGraph>],
     node: GraphNodeIndex,
     binding_usage: &'a Option<ReadRef<BindingUsageInfo>>,
+    graph_idx_override: &'a Option<u32>,
 ) -> impl Iterator<Item = (EdgeIndex, GraphNodeIndex)> + 'a {
     let graph = &*graphs[node.graph_idx()].graph;
 
@@ -1398,8 +1432,10 @@ fn iter_graphs_neighbors_rev<'a>(
     std::iter::from_fn(move || {
         while let Some((edge_idx, succ_idx)) = walker.next(graph) {
             if binding_usage.as_ref().is_some_and(|binding_usage| {
-                binding_usage
-                    .is_reference_unused_edge(&GraphEdgeIndex::new(node.graph_idx, edge_idx))
+                binding_usage.is_reference_unused_edge(&GraphEdgeIndex::new(
+                    graph_idx_override.unwrap_or(node.graph_idx),
+                    edge_idx,
+                ))
             }) {
                 // Don't just return None here, that would end the iterator
                 continue;

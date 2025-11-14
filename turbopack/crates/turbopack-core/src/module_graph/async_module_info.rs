@@ -4,7 +4,9 @@ use turbo_tasks::{ResolvedVc, TryJoinIterExt, Vc};
 
 use crate::{
     module::{Module, Modules},
-    module_graph::{GraphTraversalAction, ModuleGraph, SingleModuleGraph},
+    module_graph::{
+        GraphTraversalAction, ModuleGraph, SingleModuleGraph, binding_usage_info::BindingUsageInfo,
+    },
 };
 
 #[turbo_tasks::value(transparent)]
@@ -37,12 +39,18 @@ impl AsyncModulesInfo {
 
 #[turbo_tasks::function(operation)]
 pub async fn compute_async_module_info(
-    graph: ResolvedVc<ModuleGraph>,
+    graphs: ResolvedVc<ModuleGraph>,
 ) -> Result<Vc<AsyncModulesInfo>> {
     // Layout segment optimization, we can individually compute the async modules for each graph.
     let mut result: Vc<AsyncModulesInfo> = Vc::cell(Default::default());
-    for g in &graph.await?.graphs {
-        result = compute_async_module_info_single(**g, result);
+    let graphs = graphs.await?;
+    for (graph_idx, graph) in graphs.graphs.iter().enumerate() {
+        result = compute_async_module_info_single(
+            **graph,
+            result,
+            graph_idx as u32,
+            graphs.binding_usage.map(|c| *c),
+        );
     }
     Ok(result)
 }
@@ -51,6 +59,8 @@ pub async fn compute_async_module_info(
 async fn compute_async_module_info_single(
     graph: Vc<SingleModuleGraph>,
     parent_async_modules: Vc<AsyncModulesInfo>,
+    graph_idx: u32,
+    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
 ) -> Result<Vc<AsyncModulesInfo>> {
     let parent_async_modules = parent_async_modules.await?;
     let graph = graph.await?;
@@ -73,7 +83,14 @@ async fn compute_async_module_info_single(
     // modules in the SCC is async.
 
     let mut async_modules = self_async_modules;
-    let graph_ref = graph.read();
+    let graph_ref = graph.read(
+        Some(graph_idx),
+        if let Some(binding_usage) = binding_usage {
+            Some(binding_usage.await?)
+        } else {
+            None
+        },
+    );
     graph_ref.traverse_edges_from_entries_dfs(
         graph.entry_modules(),
         &mut (),

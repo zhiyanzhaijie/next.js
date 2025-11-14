@@ -1967,6 +1967,24 @@ async fn whole_app_module_graph_operation(
     let base_visited_modules = VisitedModules::from_graph(base_single_module_graph);
 
     let base = ModuleGraph::from_single_graph(base_single_module_graph);
+
+    let turbopack_remove_unused_imports = *project
+        .next_config()
+        .turbopack_remove_unused_imports(next_mode)
+        .await?;
+
+    let base = if turbopack_remove_unused_imports {
+        // TODO suboptimal that we do compute_binding_usage_info twice (once for the base graph
+        // and later for the full graph)
+        base.without_unused_references(
+            *compute_binding_usage_info(base.to_resolved().await?, true)
+                .resolve_strongly_consistent()
+                .await?,
+        )
+    } else {
+        base
+    };
+
     let additional_entries = project.get_all_additional_entries(base);
 
     let additional_module_graph = SingleModuleGraph::new_with_entries_visited(
@@ -1980,11 +1998,7 @@ async fn whole_app_module_graph_operation(
             .to_resolved()
             .await?;
 
-    let full = if *project
-        .next_config()
-        .turbopack_remove_unused_imports(next_mode)
-        .await?
-    {
+    let full = if turbopack_remove_unused_imports {
         full_with_unused_references
             .without_unused_references(
                 *compute_binding_usage_info(full_with_unused_references, true)
