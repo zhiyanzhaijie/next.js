@@ -1892,7 +1892,7 @@ impl Project {
         }
     }
 
-    /// Compute the used exports for each module.
+    /// Compute the used exports and unused imports for each module.
     #[turbo_tasks::function]
     async fn binding_usage_info(self: Vc<Self>) -> Result<Vc<BindingUsageInfo>> {
         let remove_unused_imports = *self
@@ -1926,7 +1926,7 @@ impl Project {
         }
     }
 
-    /// Compute the used exports for each module.
+    /// Compute the unused references that were removed (inner graph tree shaking).
     #[turbo_tasks::function]
     pub async fn unused_references(self: Vc<Self>) -> Result<Vc<OptionBindingUsageInfo>> {
         if *self
