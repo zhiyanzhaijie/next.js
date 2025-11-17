@@ -155,7 +155,7 @@ pub async fn compute_binding_usage_info(
                             // Continue, add eport
                         }
                     }
-                    ImportUsage::Global => {
+                    ImportUsage::SideEffects => {
                         debug_unused_references_name.remove(&(
                             parent,
                             ref_data.binding_usage.export.clone(),

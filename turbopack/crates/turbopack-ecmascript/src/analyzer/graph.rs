@@ -317,7 +317,7 @@ impl VarMeta {
 
 #[derive(Clone, Debug)]
 pub enum DeclUsage {
-    Global,
+    SideEffects,
     Bindings(FxHashSet<Id>),
 }
 impl Default for DeclUsage {
@@ -331,11 +331,11 @@ impl DeclUsage {
             Self::Bindings(set) => {
                 set.insert(user.clone());
             }
-            Self::Global => {}
+            Self::SideEffects => {}
         }
     }
-    fn make_global(&mut self) {
-        *self = Self::Global;
+    fn make_side_effects(&mut self) {
+        *self = Self::SideEffects;
     }
 }
 
@@ -2272,7 +2272,7 @@ impl VisitAstPath for Analyzer<'_> {
             if let Some(top_level) = self.state.cur_top_level_decl_name() {
                 usage.add_usage(top_level);
             } else {
-                usage.make_global();
+                usage.make_side_effects();
             }
 
             // Optimization: Look for a MemberExpr to see if we only access a few members from the
@@ -2336,7 +2336,7 @@ impl VisitAstPath for Analyzer<'_> {
                     .decl_usages
                     .entry(ident.to_id())
                     .or_default()
-                    .make_global();
+                    .make_side_effects();
             }
         }
     }

@@ -759,7 +759,7 @@ async fn analyze_ecmascript_module_internal(
             let mut has_global_usage = false;
             while let Some(id) = stack.pop() {
                 match var_graph.decl_usages.get(id) {
-                    Some(DeclUsage::Global) => {
+                    Some(DeclUsage::SideEffects) => {
                         has_global_usage = true;
                         break;
                     }
@@ -778,7 +778,7 @@ async fn analyze_ecmascript_module_internal(
             import_usage.insert(
                 *reference,
                 if has_global_usage {
-                    ImportUsage::Global
+                    ImportUsage::SideEffects
                 } else {
                     ImportUsage::Exports(
                         var_graph
@@ -2952,7 +2952,7 @@ async fn handle_free_var_reference(
                             ) => export.clone().map(ModulePart::export),
                             None => None,
                         },
-                        ImportUsage::Global,
+                        ImportUsage::SideEffects,
                         state.import_externals,
                     )
                     .resolved_cell())
