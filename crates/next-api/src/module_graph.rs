@@ -25,7 +25,8 @@ use turbopack_core::{
     issue::{Issue, IssueExt, IssueSeverity, IssueStage, OptionStyledString, StyledString},
     module::Module,
     module_graph::{
-        GraphTraversalAction, ModuleGraph, SingleModuleGraph, binding_usage_info::BindingUsageInfo,
+        GraphTraversalAction, ModuleGraph, SingleModuleGraph, SingleModuleGraphWithBindingUsage,
+        binding_usage_info::BindingUsageInfo,
     },
 };
 
@@ -37,10 +38,8 @@ use crate::{
 
 #[turbo_tasks::value]
 pub struct NextDynamicGraph {
-    graph: ResolvedVc<SingleModuleGraph>,
+    graph: SingleModuleGraphWithBindingUsage,
     is_single_page: bool,
-    graph_idx: u32,
-    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
 
     /// list of NextDynamicEntryModules
     data: ResolvedVc<DynamicImportEntries>,
@@ -59,17 +58,9 @@ impl NextDynamicGraphs {
         let graphs_ref = &graphs.await?;
         let next_dynamic = async {
             graphs_ref
-                .graphs
-                .iter()
-                .enumerate()
-                .map(|(graph_idx, graph)| {
-                    NextDynamicGraph::new_with_entries(
-                        **graph,
-                        is_single_page,
-                        graph_idx as u32,
-                        graphs_ref.binding_usage.map(|c| *c),
-                    )
-                    .to_resolved()
+                .iter_graphs()
+                .map(|graph| {
+                    NextDynamicGraph::new_with_entries(graph, is_single_page).to_resolved()
                 })
                 .try_join()
                 .await
@@ -142,18 +133,14 @@ pub struct DynamicImportEntriesWithImporter(
 impl NextDynamicGraph {
     #[turbo_tasks::function]
     pub async fn new_with_entries(
-        graph: ResolvedVc<SingleModuleGraph>,
+        graph: SingleModuleGraphWithBindingUsage,
         is_single_page: bool,
-        graph_idx: u32,
-        binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
     ) -> Result<Vc<Self>> {
-        let mapped = map_next_dynamic(*graph);
+        let mapped = map_next_dynamic(*graph.graph);
 
         Ok(NextDynamicGraph {
             is_single_page,
             graph,
-            graph_idx,
-            binding_usage,
             data: mapped.to_resolved().await?,
         }
         .cell())
@@ -167,7 +154,7 @@ impl NextDynamicGraph {
         let span = tracing::info_span!("collect next/dynamic imports for endpoint");
         async move {
             let data = &*self.data.await?;
-            let graph = self.graph.await?;
+            let graph = self.graph.read().await?;
 
             #[derive(Clone, PartialEq, Eq)]
             enum VisitState {
@@ -176,80 +163,69 @@ impl NextDynamicGraph {
             }
 
             let entries = if !self.is_single_page {
-                if !graph.has_entry_module(entry) {
+                if !graph.graphs.first().unwrap().has_entry_module(entry) {
                     // the graph doesn't contain the entry, e.g. for the additional module graph
                     return Ok(Vc::cell(vec![]));
                 }
                 Either::Left(std::iter::once(entry))
             } else {
-                Either::Right(graph.entry_modules())
+                Either::Right(graph.graphs.first().unwrap().entry_modules())
             };
 
             let mut result = vec![];
 
             // module -> the client reference entry (if any)
             let mut state_map = FxHashMap::default();
-            graph
-                .read(
-                    Some(self.graph_idx),
-                    if let Some(binding_usage) = &self.binding_usage {
-                        Some(binding_usage.await?)
-                    } else {
-                        None
-                    },
-                )
-                .traverse_edges_from_entries_dfs(
-                    entries,
-                    &mut (),
-                    |parent_info, node, _| {
-                        let module = node;
-                        let Some((parent_node, _)) = parent_info else {
-                            state_map.insert(module, VisitState::Entry);
-                            return Ok(GraphTraversalAction::Continue);
+            graph.traverse_edges_from_entries_dfs(
+                entries,
+                &mut (),
+                |parent_info, node, _| {
+                    let module = node;
+                    let Some((parent_node, _)) = parent_info else {
+                        state_map.insert(module, VisitState::Entry);
+                        return Ok(GraphTraversalAction::Continue);
+                    };
+                    let parent_module = parent_node;
+
+                    let module_type = data.get(&module);
+                    let parent_state = state_map.get(&parent_module).unwrap().clone();
+                    let parent_client_reference =
+                        if let Some(DynamicImportEntriesMapType::ClientReference(module)) =
+                            module_type
+                        {
+                            Some(ClientReferenceType::EcmascriptClientReference(*module))
+                        } else if let VisitState::InClientReference(ty) = parent_state {
+                            Some(ty)
+                        } else {
+                            None
                         };
-                        let parent_module = parent_node;
 
-                        let module_type = data.get(&module);
-                        let parent_state = state_map.get(&parent_module).unwrap().clone();
-                        let parent_client_reference =
-                            if let Some(DynamicImportEntriesMapType::ClientReference(module)) =
-                                module_type
-                            {
-                                Some(ClientReferenceType::EcmascriptClientReference(*module))
-                            } else if let VisitState::InClientReference(ty) = parent_state {
-                                Some(ty)
-                            } else {
-                                None
-                            };
+                    Ok(match module_type {
+                        Some(DynamicImportEntriesMapType::DynamicEntry(dynamic_entry)) => {
+                            result.push((*dynamic_entry, parent_client_reference));
 
-                        Ok(match module_type {
-                            Some(DynamicImportEntriesMapType::DynamicEntry(dynamic_entry)) => {
-                                result.push((*dynamic_entry, parent_client_reference));
-
-                                state_map.insert(module, parent_state);
-                                GraphTraversalAction::Skip
-                            }
-                            Some(DynamicImportEntriesMapType::ClientReference(
-                                client_reference,
-                            )) => {
-                                state_map.insert(
-                                    module,
-                                    VisitState::InClientReference(
-                                        ClientReferenceType::EcmascriptClientReference(
-                                            *client_reference,
-                                        ),
+                            state_map.insert(module, parent_state);
+                            GraphTraversalAction::Skip
+                        }
+                        Some(DynamicImportEntriesMapType::ClientReference(client_reference)) => {
+                            state_map.insert(
+                                module,
+                                VisitState::InClientReference(
+                                    ClientReferenceType::EcmascriptClientReference(
+                                        *client_reference,
                                     ),
-                                );
-                                GraphTraversalAction::Continue
-                            }
-                            None => {
-                                state_map.insert(module, parent_state);
-                                GraphTraversalAction::Continue
-                            }
-                        })
-                    },
-                    |_, _, _| Ok(()),
-                )?;
+                                ),
+                            );
+                            GraphTraversalAction::Continue
+                        }
+                        None => {
+                            state_map.insert(module, parent_state);
+                            GraphTraversalAction::Continue
+                        }
+                    })
+                },
+                |_, _, _| Ok(()),
+            )?;
             Ok(Vc::cell(result))
         }
         .instrument(span)
@@ -259,10 +235,8 @@ impl NextDynamicGraph {
 
 #[turbo_tasks::value]
 pub struct ServerActionsGraph {
-    graph: ResolvedVc<SingleModuleGraph>,
+    graph: SingleModuleGraphWithBindingUsage,
     is_single_page: bool,
-    graph_idx: u32,
-    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
 
     /// (Layer, RSC or Browser module) -> list of actions
     data: ResolvedVc<AllModuleActions>,
@@ -281,17 +255,9 @@ impl ServerActionsGraphs {
         let graphs_ref = &graphs.await?;
         let server_actions = async {
             graphs_ref
-                .graphs
-                .iter()
-                .enumerate()
-                .map(|(graph_idx, graph)| {
-                    ServerActionsGraph::new_with_entries(
-                        **graph,
-                        is_single_page,
-                        graph_idx as u32,
-                        graphs_ref.binding_usage.map(|c| *c),
-                    )
-                    .to_resolved()
+                .iter_graphs()
+                .map(|graph| {
+                    ServerActionsGraph::new_with_entries(graph, is_single_page).to_resolved()
                 })
                 .try_join()
                 .await
@@ -353,18 +319,14 @@ impl ServerActionsGraphs {
 impl ServerActionsGraph {
     #[turbo_tasks::function]
     pub async fn new_with_entries(
-        graph: ResolvedVc<SingleModuleGraph>,
+        graph: SingleModuleGraphWithBindingUsage,
         is_single_page: bool,
-        graph_idx: u32,
-        binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
     ) -> Result<Vc<Self>> {
-        let mapped = map_server_actions(*graph);
+        let mapped = map_server_actions(*graph.graph);
 
         Ok(ServerActionsGraph {
             is_single_page,
             graph,
-            graph_idx,
-            binding_usage,
             data: mapped.to_resolved().await?,
         }
         .cell())
@@ -384,34 +346,25 @@ impl ServerActionsGraph {
                 Cow::Borrowed(data)
             } else {
                 // The graph contains the whole app, traverse and collect all reachable imports.
-                let graph = self.graph.await?;
+                let graph = self.graph.read().await?;
 
-                if !graph.has_entry_module(entry) {
+                if !graph.graphs.first().unwrap().has_entry_module(entry) {
                     // the graph doesn't contain the entry, e.g. for the additional module graph
                     return Ok(Vc::cell(Default::default()));
                 }
 
                 let mut result = FxIndexMap::default();
-                graph
-                    .read(
-                        Some(self.graph_idx),
-                        if let Some(binding_usage) = &self.binding_usage {
-                            Some(binding_usage.await?)
-                        } else {
-                            None
-                        },
-                    )
-                    .traverse_nodes_from_entries_dfs(
-                        vec![entry],
-                        &mut result,
-                        |node, result| {
-                            if let Some(node_data) = data.get(&node) {
-                                result.insert(node, *node_data);
-                            }
-                            Ok(GraphTraversalAction::Continue)
-                        },
-                        |_, _| Ok(()),
-                    )?;
+                graph.traverse_nodes_from_entries_dfs(
+                    vec![entry],
+                    &mut result,
+                    |node, result| {
+                        if let Some(node_data) = data.get(&node) {
+                            result.insert(node, *node_data);
+                        }
+                        Ok(GraphTraversalAction::Continue)
+                    },
+                    |_, _| Ok(()),
+                )?;
                 Cow::Owned(result)
             };
 
@@ -457,9 +410,7 @@ impl ServerActionsGraph {
 #[turbo_tasks::value]
 pub struct ClientReferencesGraph {
     is_single_page: bool,
-    graph: ResolvedVc<SingleModuleGraph>,
-    graph_idx: u32,
-    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
+    graph: SingleModuleGraphWithBindingUsage,
 
     /// List of client references (modules that entries into the client graph)
     data: ResolvedVc<ClientReferenceData>,
@@ -478,17 +429,9 @@ impl ClientReferencesGraphs {
         let graphs_ref = &graphs.await?;
         let client_references = async {
             graphs_ref
-                .graphs
-                .iter()
-                .enumerate()
-                .map(|(graph_idx, graph)| {
-                    ClientReferencesGraph::new_with_entries(
-                        **graph,
-                        graph_idx as u32,
-                        is_single_page,
-                        graphs_ref.binding_usage.map(|c| *c),
-                    )
-                    .to_resolved()
+                .iter_graphs()
+                .map(|graph| {
+                    ClientReferencesGraph::new_with_entries(graph, is_single_page).to_resolved()
                 })
                 .try_join()
                 .await
@@ -575,19 +518,15 @@ impl ClientReferencesGraphs {
 impl ClientReferencesGraph {
     #[turbo_tasks::function]
     pub async fn new_with_entries(
-        graph: ResolvedVc<SingleModuleGraph>,
-        graph_idx: u32,
+        graph: SingleModuleGraphWithBindingUsage,
         is_single_page: bool,
-        binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
     ) -> Result<Vc<Self>> {
-        let mapped = map_client_references(*graph);
+        let mapped = map_client_references(*graph.graph);
 
         Ok(Self {
             is_single_page,
             graph,
             data: mapped.to_resolved().await?,
-            graph_idx,
-            binding_usage,
         }
         .cell())
     }
@@ -600,16 +539,16 @@ impl ClientReferencesGraph {
         let span = tracing::info_span!("collect client references for endpoint");
         async move {
             let data = &*self.data.await?;
-            let graph = self.graph.await?;
+            let graph = self.graph.read().await?;
 
             let entries = if !self.is_single_page {
-                if !graph.has_entry_module(entry) {
+                if !graph.graphs.first().unwrap().has_entry_module(entry) {
                     // the graph doesn't contain the entry, e.g. for the additional module graph
                     return Ok(ClientReferenceGraphResult::default().cell());
                 }
                 Either::Left(std::iter::once(entry))
             } else {
-                Either::Right(graph.entry_modules())
+                Either::Right(graph.graphs.first().unwrap().entry_modules())
             };
 
             // Because we care about 'evaluation order' we need to collect client references in the
@@ -619,14 +558,6 @@ impl ClientReferencesGraph {
 
             let mut server_components = FxIndexSet::default();
 
-            let graph = graph.read(
-                Some(self.graph_idx),
-                if let Some(binding_usage) = &self.binding_usage {
-                    Some(binding_usage.await?)
-                } else {
-                    None
-                },
-            );
             // Perform a DFS traversal to find all server components included by this page.
             graph.traverse_nodes_from_entries_dfs(
                 entries,

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Level, Span};
 use turbo_rcstr::RcStr;
 use turbo_tasks::{
-    CollectiblesSource, FxIndexMap, NonLocalValue, ReadRef, ResolvedVc, TryJoinIterExt,
+    CollectiblesSource, FxIndexMap, NonLocalValue, ReadRef, ResolvedVc, TaskInput, TryJoinIterExt,
     ValueToString, Vc,
     debug::ValueDebugFormat,
     graph::{AdjacencyMap, GraphTraversal, Visit, VisitControlFlow},
@@ -895,6 +895,7 @@ impl ModuleGraph {
 }
 
 impl ModuleGraph {
+    /// Reads the ModuleGraph into a ModuleGraphRef, awaiting all underlying graphs.
     pub async fn read_graphs(self: Vc<ModuleGraph>) -> Result<ModuleGraphRef> {
         let this = self.await?;
         Ok(ModuleGraphRef {
@@ -902,6 +903,44 @@ impl ModuleGraph {
             skip_visited_module_children: false,
             graph_idx_override: None,
             binding_usage: if let Some(binding_usage) = this.binding_usage {
+                Some(binding_usage.await?)
+            } else {
+                None
+            },
+        })
+    }
+
+    /// Returns the underlying graphs as a list, to be used for individual graph traversals.
+    pub fn iter_graphs(
+        self: &ModuleGraph,
+    ) -> impl Iterator<Item = SingleModuleGraphWithBindingUsage> {
+        self.graphs
+            .iter()
+            .enumerate()
+            .map(|(graph_idx, graph)| SingleModuleGraphWithBindingUsage {
+                graph: *graph,
+                graph_idx: graph_idx as u32,
+                binding_usage: self.binding_usage,
+            })
+    }
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TaskInput, TraceRawVcs, NonLocalValue,
+)]
+pub struct SingleModuleGraphWithBindingUsage {
+    pub graph: ResolvedVc<SingleModuleGraph>,
+    pub graph_idx: u32,
+    pub binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
+}
+
+impl SingleModuleGraphWithBindingUsage {
+    pub async fn read(self: &SingleModuleGraphWithBindingUsage) -> Result<ModuleGraphRef> {
+        Ok(ModuleGraphRef {
+            graphs: vec![self.graph.await?],
+            skip_visited_module_children: true,
+            graph_idx_override: Some(self.graph_idx),
+            binding_usage: if let Some(binding_usage) = &self.binding_usage {
                 Some(binding_usage.await?)
             } else {
                 None
