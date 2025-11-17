@@ -61,6 +61,12 @@ pub struct GraphNodeIndex {
     node_idx: NodeIndex,
 }
 impl GraphNodeIndex {
+    fn new(graph_idx: u32, node_idx: NodeIndex) -> Self {
+        Self {
+            graph_idx,
+            node_idx,
+        }
+    }
     #[inline(always)]
     fn graph_idx(&self) -> usize {
         self.graph_idx as usize
@@ -84,6 +90,10 @@ impl GraphEdgeIndex {
             graph_idx,
             edge_idx,
         }
+    }
+    #[inline(always)]
+    fn graph_idx(&self) -> usize {
+        self.graph_idx as usize
     }
 }
 
@@ -859,9 +869,9 @@ impl ModuleGraph {
         let referenced_modules =
             iter_graphs_neighbors_rev(graphs, entry, &graph_ref.binding_usage, &None)
                 .filter(|(edge_idx, _)| {
-                    let ty = graphs[entry.graph_idx()]
+                    let ty = graphs[edge_idx.graph_idx()]
                         .graph
-                        .edge_weight(*edge_idx)
+                        .edge_weight(edge_idx.edge_idx)
                         .unwrap();
                     ty.chunking_type.is_inherit_async()
                 })
@@ -980,11 +990,19 @@ impl ModuleGraphRef {
         Ok(idx)
     }
 
-    fn get_node(&self, entry: GraphNodeIndex) -> Result<&SingleModuleGraphNode> {
-        let graph = &self.graphs[entry.graph_idx()];
+    fn get_node(&self, node: GraphNodeIndex) -> Result<&SingleModuleGraphNode> {
+        let graph = &self.graphs[node.graph_idx()];
         graph
             .graph
-            .node_weight(entry.node_idx)
+            .node_weight(node.node_idx)
+            .context("Expected graph node")
+    }
+
+    fn get_edge(&self, edge: GraphEdgeIndex) -> Result<&RefData> {
+        let graph = &self.graphs[edge.graph_idx()];
+        graph
+            .graph
+            .edge_weight(edge.edge_idx)
             .context("Expected graph node")
     }
 
@@ -1107,7 +1125,6 @@ impl ModuleGraphRef {
         while let Some(node) = queue.pop_front() {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
-                let graph = &graphs[node.graph_idx()].graph;
                 for (edge, succ) in iter_graphs_neighbors_rev(
                     graphs,
                     node,
@@ -1115,9 +1132,8 @@ impl ModuleGraphRef {
                     &self.graph_idx_override,
                 ) {
                     let succ_weight = self.get_node(succ)?;
-                    let edge_weight = graph.edge_weight(edge).unwrap();
                     let action = visitor(
-                        Some((node_weight.module(), edge_weight)),
+                        Some((node_weight.module(), self.get_edge(edge)?)),
                         succ_weight.module(),
                     )?;
                     if !self.should_visit_node(succ_weight) {
@@ -1165,7 +1181,6 @@ impl ModuleGraphRef {
         while let Some(node) = stack.pop() {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
-                let graph = &graphs[node.graph_idx()].graph;
                 for (edge, succ) in iter_graphs_neighbors_rev(
                     graphs,
                     node,
@@ -1173,9 +1188,8 @@ impl ModuleGraphRef {
                     &self.graph_idx_override,
                 ) {
                     let succ_weight = self.get_node(succ)?;
-                    let edge_weight = graph.edge_weight(edge).unwrap();
                     let action = visitor(
-                        Some((node_weight.module(), edge_weight)),
+                        Some((node_weight.module(), self.get_edge(edge)?)),
                         succ_weight.module(),
                     );
                     if !self.should_visit_node(succ_weight) {
@@ -1262,8 +1276,11 @@ impl ModuleGraphRef {
             ExpandAndVisit,
         }
         #[allow(clippy::type_complexity)] // This is a temporary internal structure
-        let mut stack: Vec<(Pass, Option<(GraphNodeIndex, EdgeIndex)>, GraphNodeIndex)> =
-            Vec::with_capacity(entries.len());
+        let mut stack: Vec<(
+            Pass,
+            Option<(GraphNodeIndex, GraphEdgeIndex)>,
+            GraphNodeIndex,
+        )> = Vec::with_capacity(entries.len());
         for entry in entries.into_iter().rev() {
             stack.push((Pass::ExpandAndVisit, None, self.get_entry(entry)?));
         }
@@ -1272,10 +1289,7 @@ impl ModuleGraphRef {
             let parent_arg = match parent {
                 Some((parent_node, parent_edge)) => Some((
                     self.get_node(parent_node)?.module(),
-                    graphs[parent_node.graph_idx()]
-                        .graph
-                        .edge_weight(parent_edge)
-                        .unwrap(),
+                    self.get_edge(parent_edge)?,
                 )),
                 None => None,
             };
@@ -1417,7 +1431,6 @@ impl ModuleGraphRef {
 
             visit_count += 1;
 
-            let graph = &graphs[node.graph_idx()].graph;
             for (edge, succ) in iter_graphs_neighbors_rev(
                 graphs,
                 node,
@@ -1426,13 +1439,8 @@ impl ModuleGraphRef {
             ) {
                 let succ_weight = self.get_node(succ)?;
 
-                let edge_weight = graph.edge_weight(edge).unwrap();
                 let action = visit(
-                    Some((
-                        node_weight.module(),
-                        edge_weight,
-                        GraphEdgeIndex::new(node.graph_idx, edge),
-                    )),
+                    Some((node_weight.module(), self.get_edge(edge)?, edge)),
                     succ_weight.module(),
                     state,
                 )?;
@@ -1457,7 +1465,7 @@ fn iter_graphs_neighbors_rev<'a>(
     node: GraphNodeIndex,
     binding_usage: &'a Option<ReadRef<BindingUsageInfo>>,
     graph_idx_override: &'a Option<u32>,
-) -> impl Iterator<Item = (EdgeIndex, GraphNodeIndex)> + 'a {
+) -> impl Iterator<Item = (GraphEdgeIndex, GraphNodeIndex)> + 'a {
     let graph = &*graphs[node.graph_idx()].graph;
 
     if cfg!(debug_assertions) {
@@ -1470,23 +1478,18 @@ fn iter_graphs_neighbors_rev<'a>(
     let mut walker = graph.neighbors(node.node_idx).detach();
     std::iter::from_fn(move || {
         while let Some((edge_idx, succ_idx)) = walker.next(graph) {
+            let edge_idx = GraphEdgeIndex::new(node.graph_idx, edge_idx);
             if binding_usage.as_ref().is_some_and(|binding_usage| {
                 binding_usage.is_reference_unused_edge(&GraphEdgeIndex::new(
                     graph_idx_override.unwrap_or(node.graph_idx),
-                    edge_idx,
+                    edge_idx.edge_idx,
                 ))
             }) {
                 // Don't just return None here, that would end the iterator
                 continue;
             }
 
-            return Some((
-                edge_idx,
-                GraphNodeIndex {
-                    graph_idx: node.graph_idx,
-                    node_idx: succ_idx,
-                },
-            ));
+            return Some((edge_idx, GraphNodeIndex::new(node.graph_idx, succ_idx)));
         }
         None
     })
