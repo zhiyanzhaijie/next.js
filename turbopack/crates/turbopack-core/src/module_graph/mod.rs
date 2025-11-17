@@ -440,19 +440,6 @@ impl SingleModuleGraph {
         self.graph.node_references()
     }
 
-    pub fn read(
-        self: &ReadRef<SingleModuleGraph>,
-        graph_idx: Option<u32>,
-        binding_usage: Option<ReadRef<BindingUsageInfo>>,
-    ) -> ModuleGraphRef {
-        ModuleGraphRef {
-            graphs: vec![self.clone()],
-            skip_visited_module_children: true,
-            graph_idx_override: graph_idx,
-            binding_usage,
-        }
-    }
-
     fn traverse_cycles<'l>(
         &'l self,
         edge_filter: impl Fn(&'l RefData) -> bool,

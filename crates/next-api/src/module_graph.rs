@@ -24,10 +24,7 @@ use turbopack_core::{
     context::AssetContext,
     issue::{Issue, IssueExt, IssueSeverity, IssueStage, OptionStyledString, StyledString},
     module::Module,
-    module_graph::{
-        GraphTraversalAction, ModuleGraph, SingleModuleGraph, SingleModuleGraphWithBindingUsage,
-        binding_usage_info::BindingUsageInfo,
-    },
+    module_graph::{GraphTraversalAction, ModuleGraph, SingleModuleGraphWithBindingUsage},
 };
 
 use crate::{
@@ -766,85 +763,74 @@ struct ModuleNameMap(pub FxModuleNameMap);
 #[tracing::instrument(level = "info", name = "validate pages css imports", skip_all)]
 #[turbo_tasks::function]
 async fn validate_pages_css_imports_individual(
-    graph: Vc<SingleModuleGraph>,
+    graph: SingleModuleGraphWithBindingUsage,
     is_single_page: bool,
-    graph_idx: u32,
-    binding_usage: Option<ResolvedVc<BindingUsageInfo>>,
     entry: Vc<Box<dyn Module>>,
     app_module: ResolvedVc<Box<dyn Module>>,
 ) -> Result<()> {
-    let graph = graph.await?;
+    let graph = graph.read().await?;
     let entry = entry.to_resolved().await?;
 
     let entries = if !is_single_page {
-        if !graph.has_entry_module(entry) {
+        if !graph.graphs.first().unwrap().has_entry_module(entry) {
             // the graph doesn't contain the entry, e.g. for the additional module graph
             return Ok(());
         }
         Either::Left(std::iter::once(entry))
     } else {
-        Either::Right(graph.entry_modules())
+        Either::Right(graph.graphs.first().unwrap().entry_modules())
     };
 
     let mut candidates = vec![];
 
-    graph
-        .read(
-            Some(graph_idx),
-            if let Some(binding_usage) = &binding_usage {
-                Some(binding_usage.await?)
-            } else {
-                None
-            },
-        )
-        .traverse_edges_from_entries_dfs(
-            entries,
-            &mut (),
-            |parent_info, node, _| {
-                let module = node;
+    graph.traverse_edges_from_entries_dfs(
+        entries,
+        &mut (),
+        |parent_info, node, _| {
+            let module = node;
 
-                // If we're at a root node, there is nothing importing this module and we can skip
-                // any further validations.
-                let Some((parent_node, _)) = parent_info else {
-                    return Ok(GraphTraversalAction::Continue);
-                };
-                let parent_module = parent_node;
+            // If we're at a root node, there is nothing importing this module and we can skip
+            // any further validations.
+            let Some((parent_node, _)) = parent_info else {
+                return Ok(GraphTraversalAction::Continue);
+            };
+            let parent_module = parent_node;
 
-                // Importing CSS from _app.js is always allowed.
-                if parent_module == app_module {
-                    return Ok(GraphTraversalAction::Continue);
-                }
+            // Importing CSS from _app.js is always allowed.
+            if parent_module == app_module {
+                return Ok(GraphTraversalAction::Continue);
+            }
 
-                // If the module being imported isn't a global css module, there is nothing to
-                // validate.
-                let module_is_global_css =
-                    ResolvedVc::try_downcast_type::<CssModuleAsset>(module).is_some();
+            // If the module being imported isn't a global css module, there is nothing to
+            // validate.
+            let module_is_global_css =
+                ResolvedVc::try_downcast_type::<CssModuleAsset>(module).is_some();
 
-                if !module_is_global_css {
-                    return Ok(GraphTraversalAction::Continue);
-                }
+            if !module_is_global_css {
+                return Ok(GraphTraversalAction::Continue);
+            }
 
-                let parent_is_css_module =
-                    ResolvedVc::try_downcast_type::<ModuleCssAsset>(parent_module).is_some()
-                        || ResolvedVc::try_downcast_type::<CssModuleAsset>(parent_module).is_some();
+            let parent_is_css_module =
+                ResolvedVc::try_downcast_type::<ModuleCssAsset>(parent_module).is_some()
+                    || ResolvedVc::try_downcast_type::<CssModuleAsset>(parent_module).is_some();
 
-                // We also always allow .module css/scss/sass files to import global css files as
-                // well.
-                if parent_is_css_module {
-                    return Ok(GraphTraversalAction::Continue);
-                }
+            // We also always allow .module css/scss/sass files to import global css files as
+            // well.
+            if parent_is_css_module {
+                return Ok(GraphTraversalAction::Continue);
+            }
 
-                // If all of the above invariants have been checked, we look to see if the parent
-                // module is the same as the app module. If it isn't we know it
-                // isn't a valid place to import global css.
-                if parent_module != app_module {
-                    candidates.push(CssGlobalImportIssue::new(parent_module, module))
-                }
+            // If all of the above invariants have been checked, we look to see if the parent
+            // module is the same as the app module. If it isn't we know it
+            // isn't a valid place to import global css.
+            if parent_module != app_module {
+                candidates.push(CssGlobalImportIssue::new(parent_module, module))
+            }
 
-                Ok(GraphTraversalAction::Continue)
-            },
-            |_, _, _| Ok(()),
-        )?;
+            Ok(GraphTraversalAction::Continue)
+        },
+        |_, _, _| Ok(()),
+    )?;
 
     candidates
         .into_iter()
@@ -882,19 +868,10 @@ pub async fn validate_pages_css_imports(
 ) -> Result<()> {
     let graphs = &graph.await?;
     graphs
-        .graphs
-        .iter()
-        .enumerate()
-        .map(|(graph_idx, graph)| {
-            validate_pages_css_imports_individual(
-                **graph,
-                is_single_page,
-                graph_idx as u32,
-                graphs.binding_usage.map(|c| *c),
-                entry,
-                app_module,
-            )
-            .as_side_effect()
+        .iter_graphs()
+        .map(|graph| {
+            validate_pages_css_imports_individual(graph, is_single_page, entry, app_module)
+                .as_side_effect()
         })
         .try_join()
         .await?;
