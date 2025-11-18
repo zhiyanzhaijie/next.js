@@ -67,10 +67,6 @@ impl GraphNodeIndex {
             node_idx,
         }
     }
-    #[inline(always)]
-    fn graph_idx(&self) -> usize {
-        self.graph_idx as usize
-    }
 }
 
 unsafe impl NonLocalValue for GraphNodeIndex {}
@@ -90,10 +86,6 @@ impl GraphEdgeIndex {
             graph_idx,
             edge_idx,
         }
-    }
-    #[inline(always)]
-    fn graph_idx(&self) -> usize {
-        self.graph_idx as usize
     }
 }
 
@@ -849,11 +841,11 @@ impl ModuleGraph {
         module: ResolvedVc<Box<dyn Module>>,
     ) -> Result<Vc<AsyncModuleInfo>> {
         let graph_ref = self.read_graphs().await?;
-        let graphs = &graph_ref.graphs;
         let async_modules_info = self.async_module_info().await?;
 
         let entry = graph_ref.get_entry(module)?;
-        let referenced_modules = iter_graphs_neighbors_rev(graphs, entry, &graph_ref.binding_usage)
+        let referenced_modules = graph_ref
+            .iter_graphs_neighbors_rev(entry)
             .filter(|(edge_idx, _)| {
                 let ty = graph_ref.get_edge(*edge_idx).unwrap();
                 ty.chunking_type.is_inherit_async()
@@ -977,12 +969,16 @@ impl ModuleGraphRef {
         Ok(idx)
     }
 
-    fn get_node(&self, node: GraphNodeIndex) -> Result<&SingleModuleGraphNode> {
-        let graph = if self.graph_idx_override.is_some() {
+    fn get_graph(&self, graph_idx: u32) -> &ReadRef<SingleModuleGraph> {
+        if self.graph_idx_override.is_some() {
             self.graphs.first().unwrap()
         } else {
-            &self.graphs[node.graph_idx()]
-        };
+            &self.graphs[graph_idx as usize]
+        }
+    }
+
+    fn get_node(&self, node: GraphNodeIndex) -> Result<&SingleModuleGraphNode> {
+        let graph = self.get_graph(node.graph_idx);
         graph
             .graph
             .node_weight(node.node_idx)
@@ -990,11 +986,7 @@ impl ModuleGraphRef {
     }
 
     fn get_edge(&self, edge: GraphEdgeIndex) -> Result<&RefData> {
-        let graph = if self.graph_idx_override.is_some() {
-            self.graphs.first().unwrap()
-        } else {
-            &self.graphs[edge.graph_idx()]
-        };
+        let graph = self.get_graph(edge.graph_idx);
         graph
             .graph
             .edge_weight(edge.edge_idx)
@@ -1007,6 +999,39 @@ impl ModuleGraphRef {
         } else {
             true
         }
+    }
+
+    /// Iterate the edges of a node REVERSED!
+    fn iter_graphs_neighbors_rev<'a>(
+        &'a self,
+        node: GraphNodeIndex,
+    ) -> impl Iterator<Item = (GraphEdgeIndex, GraphNodeIndex)> + 'a {
+        let graph = &*self.get_graph(node.graph_idx).graph;
+
+        if cfg!(debug_assertions) {
+            let node_weight = graph.node_weight(node.node_idx).unwrap();
+            if let SingleModuleGraphNode::VisitedModule { .. } = node_weight {
+                panic!("iter_graphs_neighbors_rev called on VisitedModule node");
+            }
+        }
+
+        let mut walker = graph.neighbors(node.node_idx).detach();
+        std::iter::from_fn(move || {
+            while let Some((edge_idx, succ_idx)) = walker.next(graph) {
+                let edge_idx = GraphEdgeIndex::new(node.graph_idx, edge_idx);
+                if self
+                    .binding_usage
+                    .as_ref()
+                    .is_some_and(|binding_usage| binding_usage.is_reference_unused_edge(&edge_idx))
+                {
+                    // Don't just return None here, that would end the iterator
+                    continue;
+                }
+
+                return Some((edge_idx, GraphNodeIndex::new(node.graph_idx, succ_idx)));
+            }
+            None
+        })
     }
 
     /// Returns a map of all modules in the graphs to their identifiers.
@@ -1038,8 +1063,6 @@ impl ModuleGraphRef {
         visit_preorder: impl Fn(ResolvedVc<Box<dyn Module>>, &mut S) -> Result<GraphTraversalAction>,
         mut visit_postorder: impl FnMut(ResolvedVc<Box<dyn Module>>, &mut S) -> Result<()>,
     ) -> Result<()> {
-        let graphs = &self.graphs;
-
         let entries = entries.into_iter().collect::<Vec<_>>();
 
         enum Pass {
@@ -1071,7 +1094,7 @@ impl ModuleGraphRef {
                     {
                         let current = current_node.target_idx().unwrap_or(current);
                         stack.extend(
-                            iter_graphs_neighbors_rev(graphs, current, &self.binding_usage)
+                            self.iter_graphs_neighbors_rev(current)
                                 .map(|(_, child)| (Pass::ExpandAndVisit, child)),
                         );
                     }
@@ -1100,8 +1123,6 @@ impl ModuleGraphRef {
             ResolvedVc<Box<dyn Module>>,
         ) -> Result<GraphTraversalAction>,
     ) -> Result<()> {
-        let graphs = &self.graphs;
-
         let mut queue = VecDeque::from(
             entries
                 .into_iter()
@@ -1115,7 +1136,7 @@ impl ModuleGraphRef {
         while let Some(node) = queue.pop_front() {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
-                for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+                for (edge, succ) in self.iter_graphs_neighbors_rev(node) {
                     let succ_weight = self.get_node(succ)?;
                     let action = visitor(
                         Some((node_weight.module(), self.get_edge(edge)?)),
@@ -1153,8 +1174,6 @@ impl ModuleGraphRef {
             ResolvedVc<Box<dyn Module>>,
         ) -> GraphTraversalAction,
     ) -> Result<()> {
-        let graphs = &self.graphs;
-
         let mut stack = entries
             .into_iter()
             .map(|e| self.get_entry(e))
@@ -1166,7 +1185,7 @@ impl ModuleGraphRef {
         while let Some(node) = stack.pop() {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
-                for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+                for (edge, succ) in self.iter_graphs_neighbors_rev(node) {
                     let succ_weight = self.get_node(succ)?;
                     let action = visitor(
                         Some((node_weight.module(), self.get_edge(edge)?)),
@@ -1247,8 +1266,6 @@ impl ModuleGraphRef {
             &mut S,
         ) -> Result<()>,
     ) -> Result<()> {
-        let graphs = &self.graphs;
-
         let entries = entries.into_iter().collect::<Vec<_>>();
 
         enum Pass {
@@ -1289,13 +1306,9 @@ impl ModuleGraphRef {
                         && self.should_visit_node(current_node)
                     {
                         let current = current_node.target_idx().unwrap_or(current);
-                        stack.extend(
-                            iter_graphs_neighbors_rev(graphs, current, &self.binding_usage).map(
-                                |(edge, child)| {
-                                    (Pass::ExpandAndVisit, Some((current, edge)), child)
-                                },
-                            ),
-                        );
+                        stack.extend(self.iter_graphs_neighbors_rev(current).map(
+                            |(edge, child)| (Pass::ExpandAndVisit, Some((current, edge)), child),
+                        ));
                     }
                 }
             }
@@ -1354,7 +1367,6 @@ impl ModuleGraphRef {
         ) -> Result<GraphTraversalAction>,
         priority: impl Fn(ResolvedVc<Box<dyn Module>>, &mut S) -> Result<P>,
     ) -> Result<usize> {
-        let graphs = &self.graphs;
         if self.skip_visited_module_children {
             panic!(
                 "traverse_edges_fixed_point_with_priority musn't be called on individual graphs"
@@ -1407,7 +1419,7 @@ impl ModuleGraphRef {
 
             visit_count += 1;
 
-            for (edge, succ) in iter_graphs_neighbors_rev(graphs, node, &self.binding_usage) {
+            for (edge, succ) in self.iter_graphs_neighbors_rev(node) {
                 let succ_weight = self.get_node(succ)?;
 
                 let action = visit(
@@ -1428,39 +1440,6 @@ impl ModuleGraphRef {
 
         Ok(visit_count)
     }
-}
-
-/// Iterate the edges of a node REVERSED!
-fn iter_graphs_neighbors_rev<'a>(
-    graphs: &'a [ReadRef<SingleModuleGraph>],
-    node: GraphNodeIndex,
-    binding_usage: &'a Option<ReadRef<BindingUsageInfo>>,
-) -> impl Iterator<Item = (GraphEdgeIndex, GraphNodeIndex)> + 'a {
-    let graph = &*graphs[node.graph_idx()].graph;
-
-    if cfg!(debug_assertions) {
-        let node_weight = graph.node_weight(node.node_idx).unwrap();
-        if let SingleModuleGraphNode::VisitedModule { .. } = node_weight {
-            panic!("iter_graphs_neighbors_rev called on VisitedModule node");
-        }
-    }
-
-    let mut walker = graph.neighbors(node.node_idx).detach();
-    std::iter::from_fn(move || {
-        while let Some((edge_idx, succ_idx)) = walker.next(graph) {
-            let edge_idx = GraphEdgeIndex::new(node.graph_idx, edge_idx);
-            if binding_usage
-                .as_ref()
-                .is_some_and(|binding_usage| binding_usage.is_reference_unused_edge(&edge_idx))
-            {
-                // Don't just return None here, that would end the iterator
-                continue;
-            }
-
-            return Some((edge_idx, GraphNodeIndex::new(node.graph_idx, succ_idx)));
-        }
-        None
-    })
 }
 
 #[turbo_tasks::value_impl]
