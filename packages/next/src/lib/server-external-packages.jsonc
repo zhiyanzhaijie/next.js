@@ -17,6 +17,7 @@
   "@sparticuz/chromium",
   "@sparticuz/chromium-min",
   "@statsig/statsig-node-core",
+  // Native Node.js addons
   "@swc/core",
   "@xenova/transformers",
   "argon2",
@@ -34,10 +35,13 @@
   "express",
   "firebase-admin",
   "htmlrewriter",
+  // Patches the module system to shim modules
   "import-in-the-middle",
   "isolated-vm",
   "jest",
   "jsdom",
+  // Used to contain a very dynamic require to load the DB backend:
+  // https://github.com/jaredwray/keyv/blob/78b247b5b7a8c9b12154fbfae4295d6fb29158cf/packages/keyv/src/index.js#L22
   "keyv",
   "libsql",
   "mdx-bundler",
@@ -60,8 +64,10 @@
   "puppeteer",
   "puppeteer-core",
   "ravendb",
+  // Patches the module system to shim modules
   "require-in-the-middle",
   "rimraf",
+  // Native Node.js addons
   "sharp",
   "shiki",
   "sqlite3",
