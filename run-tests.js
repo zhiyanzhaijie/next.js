@@ -708,8 +708,10 @@ ${ENDGROUP}`)
 
       try {
         await yourTurn()
-      } catch (err) {
-        throw new Error(`Skipping ${test.file} due to abort.`, { cause: err })
+      } catch (cause) {
+        const error = new Error(`Skipped due to abort.`, { cause })
+        error.name = test.file
+        throw error
       }
 
       let passed = false
@@ -738,7 +740,7 @@ ${ENDGROUP}`)
           })
           passed = true
           console.log(
-            `Finished ${test.file} on retry ${i}/${numRetries} in ${
+            `${test.file} finished on retry ${i}/${numRetries} in ${
               time / 1000
             }s`
           )
