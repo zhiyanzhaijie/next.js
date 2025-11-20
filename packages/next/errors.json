@@ -943,5 +943,6 @@
   "942": "Unexpected stream chunk while in Before stage",
   "943": "getFlightStream should always receive a ReadableStream when using the edge runtime",
   "944": "nodeStreamFromReadableStream cannot be used in the edge runtime",
-  "945": "createNodeStreamFromChunks cannot be used in the edge runtime"
+  "945": "createNodeStreamFromChunks cannot be used in the edge runtime",
+  "946": "Route %s errored during %s. These errors are normally ignored and may not prevent the route from prerendering but are logged here because build debugging is enabled.\n          \nOriginal Error: %s"
 }
