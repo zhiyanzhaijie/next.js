@@ -794,17 +794,16 @@ ${ENDGROUP}`)
       // once CI runs with Node.js 24+.
       if (dirSema) await dirSema.acquire()
       await sema.acquire()
-      if (testSignal.aborted) {
-        const error = new Error(`Skipped due to abort.`, {
-          cause: testSignal.reason,
-        })
-        error.name = test.file
-        if (dirSema) dirSema.release()
-        sema.release()
-        throw error
-      }
 
       try {
+        if (testSignal.aborted) {
+          const error = new Error(`Skipped due to abort.`, {
+            cause: testSignal.reason,
+          })
+          error.name = test.file
+          throw error
+        }
+
         await runTest(test)
       } finally {
         sema.release()
