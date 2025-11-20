@@ -782,10 +782,12 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
     onFlightDataRenderError
   )
 
-  // If we decide to validate this render we will assign this function when the
-  // payload is constructed.
-  let resolveValidation: null | ReturnType<typeof createValidationOutlet>[0] =
-    null
+  // We only validate RSC requests if it is for HMR refreshes since
+  // we know we will render all the layouts necessary to perform the validation.
+  const shouldValidate = !!(
+    !isBypassingCachesInDev(renderOpts, initialRequestStore) &&
+    initialRequestStore.isHmrRefresh
+  )
 
   const getPayload = async (requestStore: RequestStore) => {
     const payload: RSCPayload &
@@ -803,18 +805,8 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
       payload._bypassCachesInDev = createElement(WarnForBypassCachesInDev, {
         route: workStore.route,
       })
-    } else if (requestStore.isHmrRefresh) {
-      // We only validate RSC requests if it is for HMR refreshes since
-      // we know we will render all the layouts necessary to perform the validation.
-      // We also must add the canonical URL part of the payload
-
-      // Placing the validation outlet in the payload is safe
-      // even if we end up discarding a render and restarting,
-      // because we're not going to wait for the stream to complete,
-      // so leaving the validation unresolved is fine.
-      const [validationResolver, validationOutlet] = createValidationOutlet()
-      resolveValidation = validationResolver
-      payload._validation = validationOutlet
+    } else if (shouldValidate) {
+      // If this payload will be used for validation, it needs to contain the canonical URL
       payload.c = prepareInitialCanonicalUrl(url)
     }
 
@@ -855,7 +847,7 @@ async function generateDynamicFlightRenderResultWithStagesInDev(
       onError
     )
 
-    if (resolveValidation) {
+    if (shouldValidate) {
       let validationDebugChannelClient: Readable | undefined = undefined
       if (returnedDebugChannel) {
         const [t1, t2] = returnedDebugChannel.clientSide.readable.tee()
@@ -3585,14 +3577,6 @@ function createDebugChannel(): DebugChannelPair | undefined {
     },
     clientSide: { readable: clientSideReadable },
   }
-}
-
-function createValidationOutlet() {
-  let resolveValidation: (value: ReactNode) => void
-  let outlet = new Promise<ReactNode>((resolve) => {
-    resolveValidation = resolve
-  })
-  return [resolveValidation!, outlet] as const
 }
 
 /**
